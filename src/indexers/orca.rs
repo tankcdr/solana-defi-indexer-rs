@@ -7,11 +7,12 @@ use solana_client::{
 };
 use solana_sdk::{ commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature };
 use solana_transaction_status::UiTransactionEncoding;
-use std::collections::{ HashSet, HashMap };
+use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::{ Arc, RwLock };
 use std::sync::atomic::{ AtomicBool, Ordering };
 use tokio::sync::Mutex;
+use crate::db::common::Repository;
 use std::time::Duration;
 use tokio::time::interval;
 use tokio::select;
@@ -65,10 +66,12 @@ impl OrcaWhirlpoolIndexer {
         }
 
         // Create a signature store for tracking last signatures
-        // For now, we'll use the in-memory implementation, but this could be switched to database
+        // Use the database implementation to persist signatures between runs
+        // Access the pool via the Repository trait
+        let db_pool = self.repository.pool().clone();
         let signature_store = crate::db::signature_store::create_signature_store(
-            crate::db::signature_store::SignatureStoreType::InMemory,
-            None
+            crate::db::signature_store::SignatureStoreType::Database,
+            Some(db_pool)
         )?;
 
         // Initialize backfill manager with config and store
@@ -79,6 +82,7 @@ impl OrcaWhirlpoolIndexer {
             dex_type: "orca".to_string(), // Specify this is for Orca DEX
         };
         let backfill_manager = BackfillManager::new(backfill_config, signature_store);
+
         // Setup WebSocket manager for live events first to ensure we don't miss events
         let ws_config = WebSocketConfig {
             ws_url: ws_url.to_string(),
@@ -109,14 +113,13 @@ impl OrcaWhirlpoolIndexer {
         // Start a task to collect events during backfill
         let buffer_task = tokio::spawn(async move {
             while is_backfilling_clone.load(Ordering::Relaxed) {
-                if
-                    let Ok(Some(log_response)) = tokio::time::timeout(
-                        Duration::from_millis(100),
-                        rx_buffer.recv()
-                    ).await
-                {
-                    // Store the event in our buffer
-                    buffer_clone.lock().await.push(log_response.clone());
+                match tokio::time::timeout(Duration::from_millis(100), rx_buffer.recv()).await {
+                    Ok(Some(log_response)) => {
+                        // Store the event in our buffer
+                        let mut guard = buffer_clone.lock().await;
+                        guard.push(log_response.clone());
+                    }
+                    _ => {} // Either timeout or None result, just continue
                 }
             }
         });
@@ -128,7 +131,7 @@ impl OrcaWhirlpoolIndexer {
 
         // Perform initial backfill for all pools
         for pool in pools {
-            println!("Performing initial backfill for pool {}", pool);
+            // Using backfill_manager's built-in logging instead of duplicating it here
             let signatures = match backfill_manager.initial_backfill_for_pool(pool).await {
                 Ok(sigs) => sigs,
                 Err(e) => {
@@ -139,7 +142,7 @@ impl OrcaWhirlpoolIndexer {
             };
 
             // Process the transactions
-            let mut success_count = 0;
+            let mut _success_count = 0;
 
             for sig in signatures {
                 match backfill_manager.fetch_transaction(&sig).await {
@@ -157,22 +160,20 @@ impl OrcaWhirlpoolIndexer {
                                 };
 
                                 // Use process_log but don't propagate errors
-                                if
-                                    let Err(e) = self.process_log(
-                                        &log_response,
-                                        &active_pools
-                                    ).await
-                                {
-                                    eprintln!(
-                                        "Error processing transaction during initial backfill: {:#}",
-                                        e
-                                    );
-                                    // Continue processing instead of returning the error
-                                } else {
-                                    // Only count successfully processed transactions
-                                    success_count += 1;
-                                    // Mark this pool as having successful processing
-                                    successful_pools.insert(*pool);
+                                match self.process_log(&log_response, &active_pools).await {
+                                    Ok(_) => {
+                                        // Only count successfully processed transactions
+                                        _success_count += 1;
+                                        // Mark this pool as having successful processing
+                                        successful_pools.insert(*pool);
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "Error processing transaction during initial backfill: {:#}",
+                                            e
+                                        );
+                                        // Continue processing instead of returning the error
+                                    }
                                 }
                             }
                         }
@@ -190,7 +191,7 @@ impl OrcaWhirlpoolIndexer {
         }
 
         // Signal that backfill is complete
-        is_backfilling.store(false, std::sync::atomic::Ordering::Relaxed);
+        is_backfilling.store(false, Ordering::Relaxed);
 
         // Wait for the buffer task to complete
         if let Err(e) = buffer_task.await {
@@ -332,7 +333,7 @@ impl OrcaWhirlpoolIndexer {
                         d if d == LIQUIDITY_INCREASED_DISCRIMINATOR => {
                             if
                                 let Ok(event) =
-                                    OrcaWhirlpoolLiquidityIncreasedEvent::try_from_bytes(
+                                    OrcaWhirlpoolLiquidityIncreasedEvent::try_from_slice(
                                         &event_bytes[8..]
                                     )
                             {
@@ -356,7 +357,7 @@ impl OrcaWhirlpoolIndexer {
                         d if d == LIQUIDITY_DECREASED_DISCRIMINATOR => {
                             if
                                 let Ok(event) =
-                                    OrcaWhirlpoolLiquidityDecreasedEvent::try_from_bytes(
+                                    OrcaWhirlpoolLiquidityDecreasedEvent::try_from_slice(
                                         &event_bytes[8..]
                                     )
                             {
@@ -611,7 +612,7 @@ impl OrcaWhirlpoolIndexer {
                                 } else if discriminator == LIQUIDITY_INCREASED_DISCRIMINATOR {
                                     if
                                         let Ok(event) =
-                                            OrcaWhirlpoolLiquidityIncreasedEvent::try_from_bytes(
+                                            OrcaWhirlpoolLiquidityIncreasedEvent::try_from_slice(
                                                 &event_bytes[8..]
                                             )
                                     {
@@ -634,7 +635,7 @@ impl OrcaWhirlpoolIndexer {
                                 } else if discriminator == LIQUIDITY_DECREASED_DISCRIMINATOR {
                                     if
                                         let Ok(event) =
-                                            OrcaWhirlpoolLiquidityDecreasedEvent::try_from_bytes(
+                                            OrcaWhirlpoolLiquidityDecreasedEvent::try_from_slice(
                                                 &event_bytes[8..]
                                             )
                                     {

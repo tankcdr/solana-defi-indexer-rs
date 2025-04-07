@@ -13,34 +13,42 @@ pub enum SignatureStore {
 
 impl SignatureStore {
     /// Store the last processed signature for a pool
-    pub fn update_signature(&self, pool: &Pubkey, signature: String, dex_type: &str) -> Result<()> {
+    pub async fn update_signature(
+        &self,
+        pool: &Pubkey,
+        signature: String,
+        dex_type: &str
+    ) -> Result<()> {
         match self {
-            Self::InMemory(store) => store.update_signature(pool, signature, dex_type),
-            Self::Database(store) => store.update_signature(pool, signature, dex_type),
+            Self::InMemory(store) => {
+                store.update_signature(pool, signature, dex_type);
+                Ok(())
+            }
+            Self::Database(store) => store.update_signature_async(pool, signature, dex_type).await,
         }
     }
 
     /// Retrieve the last processed signature for a pool
-    pub fn get_signature(&self, pool: &Pubkey, dex_type: &str) -> Result<Option<String>> {
+    pub async fn get_signature(&self, pool: &Pubkey, dex_type: &str) -> Result<Option<String>> {
         match self {
-            Self::InMemory(store) => store.get_signature(pool, dex_type),
-            Self::Database(store) => store.get_signature(pool, dex_type),
+            Self::InMemory(store) => Ok(store.get_signature(pool, dex_type)),
+            Self::Database(store) => store.get_signature_async(pool, dex_type).await,
         }
     }
 
     /// Check if we have a stored signature for this pool
-    pub fn has_signature(&self, pool: &Pubkey, dex_type: &str) -> Result<bool> {
+    pub async fn has_signature(&self, pool: &Pubkey, dex_type: &str) -> Result<bool> {
         match self {
-            Self::InMemory(store) => store.has_signature(pool, dex_type),
-            Self::Database(store) => store.has_signature(pool, dex_type),
+            Self::InMemory(store) => Ok(store.has_signature(pool, dex_type)),
+            Self::Database(store) => store.has_signature_async(pool, dex_type).await,
         }
     }
 
     /// Get all tracked pools for a specific DEX
-    pub fn get_tracked_pools(&self, dex_type: &str) -> Result<Vec<Pubkey>> {
+    pub async fn get_tracked_pools(&self, dex_type: &str) -> Result<Vec<Pubkey>> {
         match self {
-            Self::InMemory(store) => store.get_tracked_pools(dex_type),
-            Self::Database(store) => store.get_tracked_pools(dex_type),
+            Self::InMemory(store) => Ok(store.get_tracked_pools(dex_type)),
+            Self::Database(store) => store.get_tracked_pools_async(dex_type).await,
         }
     }
 }
@@ -58,35 +66,36 @@ impl InMemorySignatureStore {
         }
     }
 
-    pub fn update_signature(&self, pool: &Pubkey, signature: String, dex_type: &str) -> Result<()> {
-        let mut store = self.signatures
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Failed to acquire lock"))?;
-        store.insert((*pool, dex_type.to_string()), signature);
-        Ok(())
+    pub fn update_signature(&self, pool: &Pubkey, signature: String, dex_type: &str) {
+        if let Ok(mut store) = self.signatures.lock() {
+            store.insert((*pool, dex_type.to_string()), signature);
+        }
     }
 
-    pub fn get_signature(&self, pool: &Pubkey, dex_type: &str) -> Result<Option<String>> {
-        let store = self.signatures.lock().map_err(|_| anyhow::anyhow!("Failed to acquire lock"))?;
-        Ok(store.get(&(*pool, dex_type.to_string())).cloned())
+    pub fn get_signature(&self, pool: &Pubkey, dex_type: &str) -> Option<String> {
+        if let Ok(store) = self.signatures.lock() {
+            return store.get(&(*pool, dex_type.to_string())).cloned();
+        }
+        None
     }
 
-    pub fn has_signature(&self, pool: &Pubkey, dex_type: &str) -> Result<bool> {
-        let store = self.signatures.lock().map_err(|_| anyhow::anyhow!("Failed to acquire lock"))?;
-        Ok(store.contains_key(&(*pool, dex_type.to_string())))
+    pub fn has_signature(&self, pool: &Pubkey, dex_type: &str) -> bool {
+        if let Ok(store) = self.signatures.lock() {
+            return store.contains_key(&(*pool, dex_type.to_string()));
+        }
+        false
     }
 
-    pub fn get_tracked_pools(&self, dex_type: &str) -> Result<Vec<Pubkey>> {
-        let store = self.signatures.lock().map_err(|_| anyhow::anyhow!("Failed to acquire lock"))?;
-
+    pub fn get_tracked_pools(&self, dex_type: &str) -> Vec<Pubkey> {
         let mut pools = Vec::new();
-        for ((pool, stored_dex), _) in store.iter() {
-            if stored_dex == dex_type {
-                pools.push(*pool);
+        if let Ok(store) = self.signatures.lock() {
+            for ((pool, stored_dex), _) in store.iter() {
+                if stored_dex == dex_type {
+                    pools.push(*pool);
+                }
             }
         }
-
-        Ok(pools)
+        pools
     }
 }
 
@@ -217,30 +226,9 @@ impl DbSignatureStore {
         Ok(pools)
     }
 
-    pub fn update_signature(&self, pool: &Pubkey, signature: String, dex_type: &str) -> Result<()> {
-        // Create a runtime and block on the async function
-        let rt = tokio::runtime::Runtime::new().context("Failed to create Tokio runtime")?;
-
-        rt.block_on(self.update_signature_async(pool, signature, dex_type))
-    }
-
-    pub fn get_signature(&self, pool: &Pubkey, dex_type: &str) -> Result<Option<String>> {
-        let rt = tokio::runtime::Runtime::new().context("Failed to create Tokio runtime")?;
-
-        rt.block_on(self.get_signature_async(pool, dex_type))
-    }
-
-    pub fn has_signature(&self, pool: &Pubkey, dex_type: &str) -> Result<bool> {
-        let rt = tokio::runtime::Runtime::new().context("Failed to create Tokio runtime")?;
-
-        rt.block_on(self.has_signature_async(pool, dex_type))
-    }
-
-    pub fn get_tracked_pools(&self, dex_type: &str) -> Result<Vec<Pubkey>> {
-        let rt = tokio::runtime::Runtime::new().context("Failed to create Tokio runtime")?;
-
-        rt.block_on(self.get_tracked_pools_async(dex_type))
-    }
+    // Removed synchronous methods that created new Tokio runtimes
+    // These were causing the "Cannot start a runtime from within a runtime" error
+    // We now call the async methods directly from SignatureStore
 }
 
 /// Type of signature store to create

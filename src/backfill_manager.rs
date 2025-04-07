@@ -77,7 +77,7 @@ impl BackfillManager {
                 pool,
                 last_info.signature.clone(),
                 &self.config.dex_type
-            )?;
+            ).await?;
         }
 
         if let Some(first_info) = signatures.first() {
@@ -92,7 +92,7 @@ impl BackfillManager {
                 pool,
                 first_info.signature.clone(),
                 &self.config.dex_type
-            )?;
+            ).await?;
         }
 
         println!(
@@ -105,7 +105,9 @@ impl BackfillManager {
 
     /// Backfill missed transactions for a pool since the last processed signature
     pub async fn backfill_since_last_signature(&self, pool: &Pubkey) -> Result<Vec<Signature>> {
-        let last_signature = match self.signature_store.get_signature(pool, &self.config.dex_type)? {
+        let last_signature = match
+            self.signature_store.get_signature(pool, &self.config.dex_type).await?
+        {
             Some(sig) => sig,
             None => {
                 println!("No last signature for pool {}, performing initial backfill", pool);
@@ -149,20 +151,20 @@ impl BackfillManager {
                 pool,
                 first_info.signature.clone(),
                 &self.config.dex_type
-            )?;
+            ).await?;
         }
 
         Ok(result)
     }
 
     /// Get all pools this DEX is tracking
-    pub fn get_tracked_pools(&self) -> Result<Vec<Pubkey>> {
-        self.signature_store.get_tracked_pools(&self.config.dex_type)
+    pub async fn get_tracked_pools(&self) -> Result<Vec<Pubkey>> {
+        self.signature_store.get_tracked_pools(&self.config.dex_type).await
     }
 
     /// Check if we have a signature for this pool
-    pub fn has_signature_for_pool(&self, pool: &Pubkey) -> Result<bool> {
-        self.signature_store.has_signature(pool, &self.config.dex_type)
+    pub async fn has_signature_for_pool(&self, pool: &Pubkey) -> Result<bool> {
+        self.signature_store.has_signature(pool, &self.config.dex_type).await
     }
 
     /// Fetch transaction details for a signature
