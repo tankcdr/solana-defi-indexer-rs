@@ -1,0 +1,49 @@
+[package]
+name = "indexer"
+version = "0.1.0"
+edition = "2021"
+
+# Enable both library and binary targets
+[[bin]]
+name = "indexer"
+path = "src/main.rs"
+
+[[bin]]
+name = "setup_db"
+path = "database/setup_db.rs"
+
+[lib]
+name = "indexer"
+path = "src/lib.rs"
+
+[dependencies]
+solana-client = "1.18.23"
+solana-sdk = "1.18.23"
+solana-transaction-status = "1.18.23"
+solana-program = "1.18.23"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.25", features = ["full"] }
+futures = "0.3"
+log = "0.4"
+clap = { version = "4.4.0", features = ["derive"] }
+env_logger = "0.9"
+anyhow = "1.0"
+thiserror = "1.0"
+base64 = "0.22"
+borsh = "0.10.3"
+borsh-derive = "0.10.3"
+dotenv = "0.15"
+chrono = { version = "0.4", features = ["serde"] }
+
+# Database dependencies
+sqlx = { version = "0.6", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "chrono",
+    "macros",
+    "migrate",
+] }
+
+# For testing
+mockall = "0.11"

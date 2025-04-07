@@ -1,0 +1,12 @@
+FROM postgres:14
+
+# Set environment variables
+ENV POSTGRES_PASSWORD=postgres
+ENV POSTGRES_USER=postgres
+ENV POSTGRES_DB=postgres
+
+# Copy initialization script
+COPY database/schema.sql /docker-entrypoint-initdb.d/
+
+# Set permissions to make the init script executable
+RUN chmod 755 /docker-entrypoint-initdb.d/schema.sql
