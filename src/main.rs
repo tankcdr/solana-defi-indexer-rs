@@ -12,7 +12,7 @@ use std::str::FromStr;
 
 use indexer::{
     db::{ Database, DbConfig },
-    db::repositories::OrcaWhirlpoolRepository,
+    db::repositories::{ OrcaWhirlpoolRepository, OrcaWhirlpoolPoolRepository },
     indexers::OrcaWhirlpoolIndexer,
 };
 
@@ -75,31 +75,8 @@ async fn main() -> Result<()> {
         Command::Orca { pools } => {
             println!("Starting Orca Whirlpool indexer...");
 
-            // Parse pool addresses
-            // Create a HashSet for pool addresses as required by the indexer's start method
-            let pool_pubkeys: std::collections::HashSet<Pubkey> = match pools {
-                Some(addresses) => {
-                    // Convert string addresses to Pubkeys
-                    let mut pubkeys = std::collections::HashSet::new();
-                    for addr in addresses {
-                        let pubkey = Pubkey::from_str(addr).context(
-                            format!("Invalid Solana address: {}", addr)
-                        )?;
-                        pubkeys.insert(pubkey);
-                    }
-                    pubkeys
-                }
-                None => {
-                    // Use default pool if none specified
-                    let mut pubkeys = std::collections::HashSet::new();
-                    pubkeys.insert(
-                        Pubkey::from_str(DEFAULT_ORCA_POOL).context(
-                            "Failed to parse default Orca pool address"
-                        )?
-                    );
-                    pubkeys
-                }
-            };
+            // Get pool addresses in priority order: CLI > Database > Default
+            let pool_pubkeys = get_pool_addresses(pools, &db).await?;
 
             // Create repository and indexer
             let repository = OrcaWhirlpoolRepository::new(db.pool().clone());
@@ -120,4 +97,48 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Get pool addresses in priority order: CLI > Database > Default
+///
+/// This function fetches pool addresses based on the following priority:
+/// 1. Command line arguments (if provided)
+/// 2. Database entries (if available)
+/// 3. Default hardcoded pool address
+async fn get_pool_addresses(
+    cli_pools: &Option<Vec<String>>,
+    db: &Database
+) -> Result<std::collections::HashSet<Pubkey>> {
+    // 1. If CLI arguments are provided, use them
+    if let Some(addresses) = cli_pools {
+        if !addresses.is_empty() {
+            println!("Using pool addresses from command line arguments");
+            let mut pubkeys = std::collections::HashSet::new();
+            for addr in addresses {
+                let pubkey = Pubkey::from_str(addr).context(
+                    format!("Invalid Solana address: {}", addr)
+                )?;
+                pubkeys.insert(pubkey);
+            }
+            return Ok(pubkeys);
+        }
+    }
+
+    // 2. If no CLI arguments, try to get pools from the database
+    let pool_repo = OrcaWhirlpoolPoolRepository::new(db.pool().clone());
+    let db_pools = pool_repo.get_pool_pubkeys().await?;
+
+    if !db_pools.is_empty() {
+        println!("Using pool addresses from database");
+        return Ok(db_pools);
+    }
+
+    // 3. If no pools in database, use default
+    println!("No pools specified via CLI or found in database. Using default pool");
+    let mut pubkeys = std::collections::HashSet::new();
+    pubkeys.insert(
+        Pubkey::from_str(DEFAULT_ORCA_POOL).context("Failed to parse default Orca pool address")?
+    );
+
+    Ok(pubkeys)
 }

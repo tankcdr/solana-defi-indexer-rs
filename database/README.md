@@ -4,18 +4,20 @@ This directory contains tools for setting up and managing the indexer's database
 
 ## Schema Overview
 
-The `schema.sql` file defines the database schema with the following main tables:
+The `schema.sql` file defines the database schema using the "apestrong" schema with the following main tables:
 
-- `orca_whirlpool_events`: Base table for all Orca Whirlpool events
-- `orca_traded_events`: Stores details for trading events
-- `orca_liquidity_increased_events`: Stores details for liquidity increase events
-- `orca_liquidity_decreased_events`: Stores details for liquidity decrease events
+- `apestrong.last_signatures`: Tracks the last seen event signature for each pool to avoid reprocessing
+- `apestrong.orca_whirlpool_pools`: Stores registered pools that the indexer monitors
+- `apestrong.orca_whirlpool_events`: Base table for all Orca Whirlpool events
+- `apestrong.orca_traded_events`: Stores details for trading events
+- `apestrong.orca_liquidity_increased_events`: Stores details for liquidity increase events
+- `apestrong.orca_liquidity_decreased_events`: Stores details for liquidity decrease events
 
 Additionally, there are views that join these tables for easier querying:
 
-- `v_orca_whirlpool_traded`
-- `v_orca_whirlpool_liquidity_increased`
-- `v_orca_whirlpool_liquidity_decreased`
+- `apestrong.v_orca_whirlpool_traded`
+- `apestrong.v_orca_whirlpool_liquidity_increased`
+- `apestrong.v_orca_whirlpool_liquidity_decreased`
 
 ## Setup Utility
 
@@ -38,6 +40,7 @@ Configuration is loaded from the following sources, in order of precedence:
 Required configuration:
 
 - `DATABASE_URL`: PostgreSQL connection string (e.g., `postgres://user:password@localhost:5432/dbname`)
+  - Note: The database schema "apestrong" will be created automatically if it doesn't exist
 
 Optional configuration:
 
@@ -103,6 +106,9 @@ DATABASE_CONNECT_TIMEOUT=30
 # Solana RPC settings
 SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
 SOLANA_WS_URL=wss://api.mainnet-beta.solana.com
+
+# Indexer settings (optional)
+# DEFAULT_ORCA_POOL=Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE
 ```
 
 ## Troubleshooting
@@ -166,19 +172,19 @@ To verify that the tables were created successfully, you can:
 1. Connect to your database and list tables:
 
    ```sql
-   \dt orca_*
+   \dt apestrong.*
    ```
 
 2. Check the indexer log output, which should show:
 
    ```
    Successfully applied database schema!
-   Created tables: orca_whirlpool_events, orca_traded_events, ...
+   Created tables: apestrong.orca_whirlpool_events, apestrong.orca_traded_events, ...
    ```
 
 3. Try running a simple query:
    ```sql
-   SELECT COUNT(*) FROM orca_whirlpool_events;
+   SELECT COUNT(*) FROM apestrong.orca_whirlpool_events;
    ```
 
 ### Getting Help
@@ -233,3 +239,23 @@ For continuous integration environments, use the `--database-url` flag to provid
 ```bash
 ./database/setup_db.sh --database-url "$DATABASE_URL" --verbose
 ```
+
+## Usage in the Indexer
+
+The database is used by the indexer to:
+
+1. Store event data from Orca Whirlpool pools
+2. Track the last processed transaction signature for each pool
+3. Maintain a list of pools to monitor
+
+The indexer connects to the database using the connection details provided in the environment variables. The `db` module in the indexer code handles database connections and provides repositories for interacting with different tables.
+
+### Repository Pattern Implementation
+
+The indexer uses the repository pattern for database access:
+
+- `OrcaWhirlpoolRepository`: Handles insertion and retrieval of Orca events
+- `OrcaWhirlpoolPoolRepository`: Manages the pool registry
+- `SignatureStore`: Tracks the last processed signatures
+
+This structured approach allows the indexer to be extended with support for additional DEXs by adding new repository implementations without changing the existing code.
