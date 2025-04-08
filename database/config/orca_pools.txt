@@ -1,0 +1,10 @@
+# Orca Whirlpool Pools to Load
+# Format: One pool address per line. Lines starting with # are comments.
+
+# SOL-USDC Pool (1% fee tier)
+Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE
+
+# Fartcoin / SOL (0.16% fee tier)
+C9U2Ksk6KKWvLEeo5yUQ7Xu46X7NzeBJtd9PBfuXaUSM
+
+

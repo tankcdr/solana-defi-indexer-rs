@@ -5,8 +5,17 @@ ENV POSTGRES_PASSWORD=postgres
 ENV POSTGRES_USER=postgres
 ENV POSTGRES_DB=postgres
 
-# Copy initialization script
-COPY database/schema.sql /docker-entrypoint-initdb.d/
+# Create directory for database configuration files
+RUN mkdir -p /opt/indexer/database/config
 
-# Set permissions to make the init script executable
+# Copy database files
+COPY database/schema.sql /docker-entrypoint-initdb.d/
+COPY database/init_database.sh /docker-entrypoint-initdb.d/
+COPY database/config/orca_pools.txt /opt/indexer/database/config/
+
+# Set permissions to make the scripts executable
 RUN chmod 755 /docker-entrypoint-initdb.d/schema.sql
+RUN chmod 755 /docker-entrypoint-initdb.d/init_database.sh
+
+# Create symbolic link for config access from init script
+RUN ln -s /opt/indexer/database /docker-entrypoint-initdb.d/database
