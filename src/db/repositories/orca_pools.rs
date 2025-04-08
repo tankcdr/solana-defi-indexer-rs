@@ -149,4 +149,44 @@ impl OrcaWhirlpoolPoolRepository {
 
         Ok(pool_set)
     }
+
+    /// Get pool addresses with priority fallback: Provided list > Database > Default
+    ///
+    /// This function fetches pool addresses based on the following priority:
+    /// 1. The provided list of addresses (if any)
+    /// 2. Pool addresses stored in the database
+    /// 3. A default pool address as a fallback
+    pub async fn get_pools_with_fallback(
+        &self,
+        provided_pools: Option<&Vec<String>>,
+        default_pool: &str
+    ) -> Result<HashSet<Pubkey>> {
+        // 1. If provided addresses exist and are not empty, use them
+        if let Some(addresses) = provided_pools {
+            if !addresses.is_empty() {
+                let mut pubkeys = HashSet::new();
+                for addr in addresses {
+                    let pubkey = Pubkey::from_str(addr).context(
+                        format!("Invalid Solana address: {}", addr)
+                    )?;
+                    pubkeys.insert(pubkey);
+                }
+                return Ok(pubkeys);
+            }
+        }
+
+        // 2. Try to get pools from the database
+        let db_pools = self.get_pool_pubkeys().await?;
+        if !db_pools.is_empty() {
+            return Ok(db_pools);
+        }
+
+        // 3. Use the default pool as fallback
+        let mut pubkeys = HashSet::new();
+        pubkeys.insert(
+            Pubkey::from_str(default_pool).context("Failed to parse default Orca pool address")?
+        );
+
+        Ok(pubkeys)
+    }
 }

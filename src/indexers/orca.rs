@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{ Context, Result };
 use solana_client::{
     nonblocking::rpc_client::RpcClient,
     rpc_config::{ RpcTransactionConfig, RpcTransactionLogsFilter },
@@ -22,7 +22,7 @@ use borsh::BorshDeserialize;
 
 // Update imports to use new signature store
 use crate::backfill_manager::{ BackfillConfig, BackfillManager };
-use crate::db::repositories::OrcaWhirlpoolRepository;
+use crate::db::repositories::{ OrcaWhirlpoolRepository, OrcaWhirlpoolPoolRepository };
 use crate::models::orca::whirlpool::{
     TRADED_EVENT_DISCRIMINATOR,
     LIQUIDITY_INCREASED_DISCRIMINATOR,
@@ -40,22 +40,74 @@ use crate::models::orca::whirlpool::{
 };
 use crate::websocket_manager::{ WebSocketConfig, WebSocketManager };
 
+// Default Orca pool (SOL/USDC)
+const DEFAULT_ORCA_POOL: &str = "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE";
+
 /// Orca Whirlpool event indexer
 pub struct OrcaWhirlpoolIndexer {
     repository: OrcaWhirlpoolRepository,
+    pool_pubkeys: HashSet<Pubkey>,
 }
 
 impl OrcaWhirlpoolIndexer {
-    /// Create a new indexer with the given repository
-    pub fn new(repository: OrcaWhirlpoolRepository) -> Self {
-        Self { repository }
+    /// Create a new indexer with the given repository and pool set
+    pub fn new(repository: OrcaWhirlpoolRepository, pool_pubkeys: HashSet<Pubkey>) -> Self {
+        Self { repository, pool_pubkeys }
     }
 
-    /// Start indexing events for the given pools
-    pub async fn start(&self, rpc_url: &str, ws_url: &str, pools: &HashSet<Pubkey>) -> Result<()> {
+    /// Create an indexer instance with a freshly initialized repository and default pool
+    pub fn create(db_pool: sqlx::PgPool) -> Result<Self> {
+        // Create a singleton pool set with the default pool
+        let mut pool_pubkeys = HashSet::new();
+        pool_pubkeys.insert(
+            Pubkey::from_str(DEFAULT_ORCA_POOL).context(
+                "Failed to parse default Orca pool address"
+            )?
+        );
+
+        let repository = OrcaWhirlpoolRepository::new(db_pool);
+        Ok(Self::new(repository, pool_pubkeys))
+    }
+
+    /// Create an indexer and resolve pool addresses in one operation
+    ///
+    /// This method:
+    /// 1. Creates the required repositories
+    /// 2. Resolves pool addresses based on priority (CLI > DB > Default)
+    /// 3. Logs the source of pool addresses
+    /// 4. Returns the fully configured indexer
+    pub async fn create_with_pools(
+        db_pool: sqlx::PgPool,
+        provided_pools: Option<&Vec<String>>
+    ) -> Result<Self> {
+        // Create the pool repository for address resolution
+        let pool_repo = OrcaWhirlpoolPoolRepository::new(db_pool.clone());
+
+        // Resolve pool addresses
+        let pool_pubkeys = pool_repo.get_pools_with_fallback(
+            provided_pools,
+            DEFAULT_ORCA_POOL
+        ).await?;
+
+        // Log information about the pool source
+        if provided_pools.is_some() && !provided_pools.unwrap().is_empty() {
+            println!("Using pool addresses from command line arguments");
+        } else if pool_pubkeys.len() > 1 {
+            println!("Using pool addresses from database");
+        } else {
+            println!("No pools specified via CLI or found in database. Using default pool");
+        }
+
+        // Create the indexer with the resolved pools
+        let repository = OrcaWhirlpoolRepository::new(db_pool);
+        Ok(Self::new(repository, pool_pubkeys))
+    }
+
+    /// Start indexing events using the pools configured in this indexer
+    pub async fn start(&self, rpc_url: &str, ws_url: &str) -> Result<()> {
         // Create a shared pool set for filtering events
-        let active_pools = Arc::new(RwLock::new(pools.clone()));
-        let pool_addresses: Vec<String> = pools
+        let active_pools = Arc::new(RwLock::new(self.pool_pubkeys.clone()));
+        let pool_addresses: Vec<String> = self.pool_pubkeys
             .iter()
             .map(|p| p.to_string())
             .collect();
@@ -130,7 +182,7 @@ impl OrcaWhirlpoolIndexer {
         let mut successful_pools = HashSet::new();
 
         // Perform initial backfill for all pools
-        for pool in pools {
+        for pool in &self.pool_pubkeys {
             // Using backfill_manager's built-in logging instead of duplicating it here
             let signatures = match backfill_manager.initial_backfill_for_pool(pool).await {
                 Ok(sigs) => sigs,
@@ -220,7 +272,7 @@ impl OrcaWhirlpoolIndexer {
         // Track the last time we detected a connection issue
         let mut last_backfill = std::time::Instant::now();
 
-        println!("Monitoring Orca Whirlpool logs for {} pools...", pools.len());
+        println!("Monitoring Orca Whirlpool logs for {} pools...", self.pool_pubkeys.len());
 
         loop {
             select! {
@@ -243,7 +295,7 @@ impl OrcaWhirlpoolIndexer {
                             
                             // If it's been more than 2 minutes since our last backfill, do another one
                             if last_backfill.elapsed() > Duration::from_secs(120) {
-                                for pool in pools {
+                                for pool in &self.pool_pubkeys {
                                     let signatures = match backfill_manager.backfill_since_last_signature(pool).await {
                                         Ok(sigs) => sigs,
                                         Err(e) => {
