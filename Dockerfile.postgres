@@ -11,10 +11,9 @@ RUN mkdir -p /opt/indexer/database/config
 # Copy database files
 COPY database/schema.sql /docker-entrypoint-initdb.d/
 COPY database/init_database.sh /docker-entrypoint-initdb.d/
-COPY database/config/orca_pools.txt /opt/indexer/database/config/
 
 # Set permissions to make the scripts executable
-RUN chmod 755 /docker-entrypoint-initdb.d/schema.sql
+RUN chmod 644 /docker-entrypoint-initdb.d/schema.sql
 RUN chmod 755 /docker-entrypoint-initdb.d/init_database.sh
 
 # Create symbolic link for config access from init script

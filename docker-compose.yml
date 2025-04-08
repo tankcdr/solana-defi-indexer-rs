@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   db:
     build:
@@ -20,6 +18,24 @@ services:
       retries: 10
     restart: unless-stopped
 
+  init-db:
+    build:
+      context: .
+      dockerfile: Dockerfile.init
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgres://postgres:postgres@db:5432/postgres
+      - DATABASE_MAX_CONNECTIONS=5
+      - DATABASE_CONNECT_TIMEOUT=30
+      - SOLANA_RPC_URL=${SOLANA_RPC_URL:-https://api.mainnet-beta.solana.com}
+      - SOLANA_WS_URL=${SOLANA_WS_URL:-wss://api.mainnet-beta.solana.com}
+    volumes:
+      - ./database/config:/app/database/config
+    # Run once and exit
+    restart: "no"
+
   orca-indexer:
     build:
       context: .
@@ -27,6 +43,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      init-db:
+        condition: service_completed_successfully
     environment:
       - DATABASE_URL=postgres://postgres:postgres@db:5432/postgres
       - DATABASE_MAX_CONNECTIONS=5

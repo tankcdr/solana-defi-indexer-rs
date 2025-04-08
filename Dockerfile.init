@@ -1,0 +1,57 @@
+# Build stage
+FROM rust:1.84 AS builder
+
+WORKDIR /usr/src/app
+
+# Install build dependencies
+RUN apt-get update && \
+    apt-get install -y pkg-config libssl-dev build-essential && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy manifest files for dependency caching
+COPY Cargo.toml Cargo.lock ./
+
+# Copy the real source code
+COPY src/ ./src/
+COPY database/ ./database/
+COPY tests/ ./tests/
+
+# Build the final application - pre-build it instead of building at runtime
+RUN cargo build --bin load_orca_pool --release
+
+# Runtime stage
+FROM ubuntu:22.04
+
+WORKDIR /app
+
+# Install runtime dependencies including PostgreSQL client for database checks
+RUN apt-get update && \
+    apt-get install -y ca-certificates postgresql-client && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create necessary directory structure
+RUN mkdir -p /app/database/config
+
+# Copy the built executable
+COPY --from=builder /usr/src/app/target/release/load_orca_pool /app/load_orca_pool
+RUN chmod +x /app/load_orca_pool
+
+# Copy the Docker-optimized script
+COPY database/load_orca_pools_docker.sh /app/load_pools.sh
+RUN chmod +x /app/load_pools.sh
+
+# Copy the pools configuration file
+COPY --from=builder /usr/src/app/database/config/orca_pools.txt /app/database/config/
+
+# Set environment variables with default values
+ENV DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres
+ENV DATABASE_MAX_CONNECTIONS=5
+ENV DATABASE_CONNECT_TIMEOUT=30
+ENV SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
+ENV SOLANA_WS_URL=wss://api.mainnet-beta.solana.com
+
+# Display the final app contents for debugging
+RUN ls -la /app
+
+# Use the Docker-optimized wrapper script as the entrypoint
+ENTRYPOINT ["/app/load_pools.sh"]
