@@ -1,12 +1,6 @@
 use anyhow::{ Context, Result };
-use solana_client::{
-    nonblocking::rpc_client::RpcClient,
-    rpc_config::{ RpcTransactionConfig, RpcTransactionLogsFilter },
-    rpc_client::GetConfirmedSignaturesForAddress2Config,
-    rpc_response::RpcLogsResponse,
-};
-use solana_sdk::{ commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature };
-use solana_transaction_status::UiTransactionEncoding;
+use solana_client::{ rpc_config::RpcTransactionLogsFilter, rpc_response::RpcLogsResponse };
+use solana_sdk::{ commitment_config::CommitmentConfig, pubkey::Pubkey };
 use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::{ Arc, RwLock };
@@ -22,7 +16,11 @@ use borsh::BorshDeserialize;
 
 // Update imports to use new signature store
 use crate::backfill_manager::{ BackfillConfig, BackfillManager };
-use crate::db::repositories::{ OrcaWhirlpoolRepository, OrcaWhirlpoolPoolRepository };
+use crate::db::repositories::{
+    OrcaWhirlpoolRepository,
+    OrcaWhirlpoolPoolRepository,
+    OrcaWhirlpoolBatchRepository, // Keep the batch repository trait for DB operations
+};
 use crate::models::orca::whirlpool::{
     TRADED_EVENT_DISCRIMINATOR,
     LIQUIDITY_INCREASED_DISCRIMINATOR,
@@ -181,8 +179,14 @@ impl OrcaWhirlpoolIndexer {
         // Track pools with successful processing
         let mut successful_pools = HashSet::new();
 
+        // Wrap the backfill manager in an Arc for sharing across tasks
+        let backfill_manager = Arc::new(backfill_manager);
+
+        println!("Using sequential transaction fetching for RPC calls to avoid rate limiting");
+
         // Perform initial backfill for all pools
         for pool in &self.pool_pubkeys {
+            let pool_pubkey = *pool;
             // Using backfill_manager's built-in logging instead of duplicating it here
             let signatures = match backfill_manager.initial_backfill_for_pool(pool).await {
                 Ok(sigs) => sigs,
@@ -193,11 +197,27 @@ impl OrcaWhirlpoolIndexer {
                 }
             };
 
-            // Process the transactions
-            let mut _success_count = 0;
+            if signatures.is_empty() {
+                println!("No signatures found for pool {}", pool);
+                continue;
+            }
+            println!("Fetching {} transactions sequentially for pool {}", signatures.len(), pool);
 
+            // Process the transactions sequentially
+            let mut _success_count = 0;
+            let total_fetched = signatures.len();
+
+            // Create collections for batching different event types
+            let mut traded_events: Vec<OrcaWhirlpoolTradedEventRecord> = Vec::new();
+            let mut liquidity_increased_events: Vec<OrcaWhirlpoolLiquidityIncreasedEventRecord> =
+                Vec::new();
+            let mut liquidity_decreased_events: Vec<OrcaWhirlpoolLiquidityDecreasedEventRecord> =
+                Vec::new();
+
+            // Process each signature sequentially
             for sig in signatures {
-                match backfill_manager.fetch_transaction(&sig).await {
+                let result = backfill_manager.fetch_transaction(&sig).await;
+                match result {
                     Ok(tx) => {
                         if let Some(meta) = tx.transaction.meta {
                             if
@@ -211,13 +231,24 @@ impl OrcaWhirlpoolIndexer {
                                     logs: log_messages,
                                 };
 
-                                // Use process_log but don't propagate errors
-                                match self.process_log(&log_response, &active_pools).await {
-                                    Ok(_) => {
+                                // Instead of direct processing, use our batch collector
+                                match
+                                    self.collect_events_from_log(
+                                        &log_response,
+                                        &active_pools,
+                                        &mut traded_events,
+                                        &mut liquidity_increased_events,
+                                        &mut liquidity_decreased_events
+                                    ).await
+                                {
+                                    Ok(true) => {
                                         // Only count successfully processed transactions
                                         _success_count += 1;
                                         // Mark this pool as having successful processing
-                                        successful_pools.insert(*pool);
+                                        successful_pools.insert(pool_pubkey);
+                                    }
+                                    Ok(false) => {
+                                        // No events found, but not an error
                                     }
                                     Err(e) => {
                                         eprintln!(
@@ -237,9 +268,50 @@ impl OrcaWhirlpoolIndexer {
                 }
             }
 
-            // For manual backfill, directly use the backfill_manager to update
-            // signatures, as it handles both initial and newest signature tracking
-            // We're just providing an enhanced processing loop with better error handling
+            // Now batch insert all collected events
+            if _success_count > 0 {
+                println!("Batch inserting {} traded events", traded_events.len());
+                if !traded_events.is_empty() {
+                    if let Err(e) = self.repository.batch_insert_traded_events(traded_events).await {
+                        eprintln!("Error batch inserting traded events: {:#}", e);
+                    }
+                }
+
+                println!(
+                    "Batch inserting {} liquidity increased events",
+                    liquidity_increased_events.len()
+                );
+                if !liquidity_increased_events.is_empty() {
+                    if
+                        let Err(e) = self.repository.batch_insert_liquidity_increased_events(
+                            liquidity_increased_events
+                        ).await
+                    {
+                        eprintln!("Error batch inserting liquidity increased events: {:#}", e);
+                    }
+                }
+
+                println!(
+                    "Batch inserting {} liquidity decreased events",
+                    liquidity_decreased_events.len()
+                );
+                if !liquidity_decreased_events.is_empty() {
+                    if
+                        let Err(e) = self.repository.batch_insert_liquidity_decreased_events(
+                            liquidity_decreased_events
+                        ).await
+                    {
+                        eprintln!("Error batch inserting liquidity decreased events: {:#}", e);
+                    }
+                }
+            }
+
+            println!(
+                "Successfully processed {} out of {} transactions for pool {}",
+                _success_count,
+                total_fetched,
+                pool
+            );
         }
 
         // Signal that backfill is complete
@@ -296,6 +368,7 @@ impl OrcaWhirlpoolIndexer {
                             // If it's been more than 2 minutes since our last backfill, do another one
                             if last_backfill.elapsed() > Duration::from_secs(120) {
                                 for pool in &self.pool_pubkeys {
+                                    let _pool_pubkey = *pool; // Add underscore to unused variable
                                     let signatures = match backfill_manager.backfill_since_last_signature(pool).await {
                                         Ok(sigs) => sigs,
                                         Err(e) => {
@@ -304,27 +377,95 @@ impl OrcaWhirlpoolIndexer {
                                             continue;
                                         }
                                     };
+                                    
+                                    if signatures.is_empty() {
+                                        println!("No new signatures found for pool {} during scheduled backfill", pool);
+                                        continue;
+                                    }
+                                    
+                                    println!(
+                                        "Scheduled backfill: Fetching {} transactions sequentially for pool {}",
+                                        signatures.len(),
+                                        pool
+                                    );
+                                    
+                                    // Store count before processing
+                                    let scheduled_total = signatures.len();
+                                    let mut scheduled_success_count = 0;
+                                    
+                                    // Create collections for batching different event types
+                                    let mut traded_events: Vec<OrcaWhirlpoolTradedEventRecord> = Vec::new();
+                                    let mut liquidity_increased_events: Vec<OrcaWhirlpoolLiquidityIncreasedEventRecord> = Vec::new();
+                                    let mut liquidity_decreased_events: Vec<OrcaWhirlpoolLiquidityDecreasedEventRecord> = Vec::new();
+                                    
+                                    // Process each signature sequentially
                                     for sig in signatures {
-                                        if let Ok(tx) = backfill_manager.fetch_transaction(&sig).await {
-                                            if let Some(meta) = tx.transaction.meta {
-                                                if let Some(log_messages) = Into::<Option<Vec<String>>>::into(meta.log_messages) {
-                                                    let log_response = RpcLogsResponse {
-                                                        signature: sig.to_string(),
-                                                        err: meta.err,
-                                                        logs: log_messages,
-                                                    };
-                                                    
-                                                    if let Err(e) = self.process_log(&log_response, &active_pools).await {
-                                                        eprintln!("Error processing transaction during scheduled backfill: {:#}", e);
-                                                        // Continue processing instead of returning the error
+                                        let result = backfill_manager.fetch_transaction(&sig).await;
+                                        match result {
+                                            Ok(tx) => {
+                                                if let Some(meta) = tx.transaction.meta {
+                                                    if let Some(log_messages) = Into::<Option<Vec<String>>>::into(meta.log_messages) {
+                                                        let log_response = RpcLogsResponse {
+                                                            signature: sig.to_string(),
+                                                            err: meta.err,
+                                                            logs: log_messages,
+                                                        };
+                                                        
+                                                        // Use batch collection instead of direct processing
+                                                        match self.collect_events_from_log(
+                                                            &log_response,
+                                                            &active_pools,
+                                                            &mut traded_events,
+                                                            &mut liquidity_increased_events,
+                                                            &mut liquidity_decreased_events
+                                                        ).await {
+                                                            Ok(true) => {
+                                                                scheduled_success_count += 1;
+                                                            }
+                                                            Ok(false) => {
+                                                                // No events found, but not an error
+                                                            }
+                                                            Err(e) => {
+                                                                eprintln!("Error processing transaction during scheduled backfill: {:#}", e);
+                                                                // Continue processing instead of returning the error
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
-                                        } else {
-                                            // Log fetch error but continue with next signature
-                                            eprintln!("Error fetching transaction {} during backfill", sig);
+                                            Err(e) => {
+                                                // Log fetch error but continue with next signature
+                                                eprintln!("Error fetching transaction {} during scheduled backfill: {:#}", sig, e);
+                                            }
                                         }
                                     }
+                                    
+                                    // Now batch insert all collected events
+                                    if scheduled_success_count > 0 {
+                                        println!("Scheduled backfill: Batch inserting {} traded events", traded_events.len());
+                                        if !traded_events.is_empty() {
+                                            if let Err(e) = self.repository.batch_insert_traded_events(traded_events).await {
+                                                eprintln!("Error batch inserting traded events during scheduled backfill: {:#}", e);
+                                            }
+                                        }
+                                        
+                                        println!("Scheduled backfill: Batch inserting {} liquidity increased events", liquidity_increased_events.len());
+                                        if !liquidity_increased_events.is_empty() {
+                                            if let Err(e) = self.repository.batch_insert_liquidity_increased_events(liquidity_increased_events).await {
+                                                eprintln!("Error batch inserting liquidity increased events during scheduled backfill: {:#}", e);
+                                            }
+                                        }
+                                        
+                                        println!("Scheduled backfill: Batch inserting {} liquidity decreased events", liquidity_decreased_events.len());
+                                        if !liquidity_decreased_events.is_empty() {
+                                            if let Err(e) = self.repository.batch_insert_liquidity_decreased_events(liquidity_decreased_events).await {
+                                                eprintln!("Error batch inserting liquidity decreased events during scheduled backfill: {:#}", e);
+                                            }
+                                        }
+                                    }
+                                    
+                                    println!("Scheduled backfill: Successfully processed {} out of {} transactions for pool {}",
+                                             scheduled_success_count, scheduled_total, pool);
                                 }
                                 
                                 last_backfill = std::time::Instant::now();
@@ -355,82 +496,71 @@ impl OrcaWhirlpoolIndexer {
             return Ok(());
         }
 
-        // Process each log line
-        for log_line in &log.logs {
-            if log_line.starts_with("Program data: ") {
-                if let Some(event_bytes) = self.extract_event_data(log_line) {
-                    if event_bytes.len() < 8 {
-                        continue;
-                    }
+        // Extract and process events
+        let log_lines: Vec<&str> = log.logs
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
 
-                    let discriminator = &event_bytes[..8];
-                    let active_pools_guard = active_pools.read().unwrap();
+        // Find a mention of a whirlpool address that matches our active pools
+        for line in &log_lines {
+            if line.contains("Program data:") {
+                // Extract the binary data part
+                if let Some(data) = self.extract_event_data(line) {
+                    if data.len() >= 8 {
+                        // Get the discriminator (first 8 bytes)
+                        let discriminator = &data[0..8];
 
-                    match discriminator {
-                        d if d == TRADED_EVENT_DISCRIMINATOR => {
-                            if
-                                let Ok(event) = OrcaWhirlpoolTradedEvent::try_from_slice(
-                                    &event_bytes[8..]
-                                )
-                            {
+                        // Using if-else statements with slice comparisons instead of match
+                        if discriminator == &TRADED_EVENT_DISCRIMINATOR[..] {
+                            if let Ok(event) = OrcaWhirlpoolTradedEvent::try_from_slice(&data[8..]) {
+                                // Check if this pool is in our watch list
+                                let active_pools_guard = active_pools.read().unwrap();
                                 if active_pools_guard.contains(&event.whirlpool) {
-                                    drop(active_pools_guard); // Release lock before async operation
-                                    if let Err(e) = self.handle_traded_event(log, event).await {
-                                        eprintln!("Error processing traded event: {:#}", e);
-                                        // Continue processing instead of returning the error
-                                    }
+                                    // Release the read lock before processing
+                                    drop(active_pools_guard);
+                                    self.log_traded_event(&event);
+                                    return self.handle_traded_event(
+                                        event,
+                                        log.signature.clone()
+                                    ).await;
                                 }
                             }
-                        }
-                        d if d == LIQUIDITY_INCREASED_DISCRIMINATOR => {
+                        } else if discriminator == &LIQUIDITY_INCREASED_DISCRIMINATOR[..] {
                             if
                                 let Ok(event) =
-                                    OrcaWhirlpoolLiquidityIncreasedEvent::try_from_slice(
-                                        &event_bytes[8..]
-                                    )
+                                    OrcaWhirlpoolLiquidityIncreasedEvent::try_from_slice(&data[8..])
                             {
+                                // Check if this pool is in our watch list
+                                let active_pools_guard = active_pools.read().unwrap();
                                 if active_pools_guard.contains(&event.whirlpool) {
-                                    drop(active_pools_guard); // Release lock before async operation
-                                    if
-                                        let Err(e) = self.handle_liquidity_increased_event(
-                                            log,
-                                            event
-                                        ).await
-                                    {
-                                        eprintln!(
-                                            "Error processing liquidity increased event: {:#}",
-                                            e
-                                        );
-                                        // Continue processing instead of returning the error
-                                    }
+                                    // Release the read lock before processing
+                                    drop(active_pools_guard);
+                                    self.log_liquidity_increased_event(&event);
+                                    return self.handle_liquidity_increased_event(
+                                        event,
+                                        log.signature.clone()
+                                    ).await;
                                 }
                             }
-                        }
-                        d if d == LIQUIDITY_DECREASED_DISCRIMINATOR => {
+                        } else if discriminator == &LIQUIDITY_DECREASED_DISCRIMINATOR[..] {
                             if
                                 let Ok(event) =
-                                    OrcaWhirlpoolLiquidityDecreasedEvent::try_from_slice(
-                                        &event_bytes[8..]
-                                    )
+                                    OrcaWhirlpoolLiquidityDecreasedEvent::try_from_slice(&data[8..])
                             {
+                                // Check if this pool is in our watch list
+                                let active_pools_guard = active_pools.read().unwrap();
                                 if active_pools_guard.contains(&event.whirlpool) {
-                                    drop(active_pools_guard); // Release lock before async operation
-                                    if
-                                        let Err(e) = self.handle_liquidity_decreased_event(
-                                            log,
-                                            event
-                                        ).await
-                                    {
-                                        eprintln!(
-                                            "Error processing liquidity decreased event: {:#}",
-                                            e
-                                        );
-                                        // Continue processing instead of returning the error
-                                    }
+                                    // Release the read lock before processing
+                                    drop(active_pools_guard);
+                                    self.log_liquidity_decreased_event(&event);
+                                    return self.handle_liquidity_decreased_event(
+                                        event,
+                                        log.signature.clone()
+                                    ).await;
                                 }
                             }
                         }
-                        _ => {} // Not a relevant discriminator
                     }
                 }
             }
@@ -439,31 +569,26 @@ impl OrcaWhirlpoolIndexer {
         Ok(())
     }
 
-    /// Handle a traded event
     async fn handle_traded_event(
         &self,
-        log: &RpcLogsResponse,
-        event: OrcaWhirlpoolTradedEvent
+        event: OrcaWhirlpoolTradedEvent,
+        signature: String
     ) -> Result<()> {
-        println!(
-            "Swap detected for pool {}! A->B: {}, Input: {}, Output: {}, LP Fee: {}",
-            event.whirlpool,
-            event.a_to_b,
-            event.input_amount,
-            event.output_amount,
-            event.lp_fee
-        );
+        // Create a new OrcaWhirlpoolEvent without ID and timestamp
+        // These will be set by the database when inserting
+        let base_event = OrcaWhirlpoolEvent {
+            id: 0, // Will be set by database
+            signature,
+            whirlpool: event.whirlpool.to_string(),
+            event_type: OrcaWhirlpoolEventType::Traded.to_string(),
+            version: 1,
+            timestamp: chrono::Utc::now(), // Will be overwritten by database
+        };
 
-        // Create base event record
-        let base_event = OrcaWhirlpoolEvent::new(
-            log.signature.clone(),
-            event.whirlpool,
-            OrcaWhirlpoolEventType::Traded
-        );
-
-        // Create traded event record
-        let traded_event = OrcaWhirlpoolTradedRecord {
-            event_id: 0, // Will be set by the database
+        // Create the data record without event_id
+        // This will be set by the repository after the base event is inserted
+        let data = OrcaWhirlpoolTradedRecord {
+            event_id: 0, // Will be set after base event is inserted
             a_to_b: event.a_to_b,
             pre_sqrt_price: event.pre_sqrt_price as i64,
             post_sqrt_price: event.post_sqrt_price as i64,
@@ -475,41 +600,35 @@ impl OrcaWhirlpoolIndexer {
             protocol_fee: event.protocol_fee as i64,
         };
 
-        // Create composite record
         let event_record = OrcaWhirlpoolTradedEventRecord {
             base: base_event,
-            data: traded_event,
+            data,
         };
 
-        // Store in database
         self.repository.insert_traded_event(event_record).await?;
-
         Ok(())
     }
 
-    /// Handle a liquidity increased event
     async fn handle_liquidity_increased_event(
         &self,
-        log: &RpcLogsResponse,
-        event: OrcaWhirlpoolLiquidityIncreasedEvent
+        event: OrcaWhirlpoolLiquidityIncreasedEvent,
+        signature: String
     ) -> Result<()> {
-        println!(
-            "Liquidity increased for pool {}: token_a={}, token_b={}",
-            event.whirlpool,
-            event.token_a_amount,
-            event.token_b_amount
-        );
+        // Create a new OrcaWhirlpoolEvent without ID and timestamp
+        // These will be set by the database when inserting
+        let base_event = OrcaWhirlpoolEvent {
+            id: 0, // Will be set by database
+            signature,
+            whirlpool: event.whirlpool.to_string(),
+            event_type: OrcaWhirlpoolEventType::LiquidityIncreased.to_string(),
+            version: 1,
+            timestamp: chrono::Utc::now(), // Will be overwritten by database
+        };
 
-        // Create base event record
-        let base_event = OrcaWhirlpoolEvent::new(
-            log.signature.clone(),
-            event.whirlpool,
-            OrcaWhirlpoolEventType::LiquidityIncreased
-        );
-
-        // Create liquidity event record
-        let liquidity_event = OrcaWhirlpoolLiquidityRecord {
-            event_id: 0, // Will be set by the database
+        // Create the data record without event_id
+        // This will be set by the repository after the base event is inserted
+        let data = OrcaWhirlpoolLiquidityRecord {
+            event_id: 0, // Will be set after base event is inserted
             position: event.position.to_string(),
             tick_lower_index: event.tick_lower_index,
             tick_upper_index: event.tick_upper_index,
@@ -520,41 +639,35 @@ impl OrcaWhirlpoolIndexer {
             token_b_transfer_fee: event.token_b_transfer_fee as i64,
         };
 
-        // Create composite record
         let event_record = OrcaWhirlpoolLiquidityIncreasedEventRecord {
             base: base_event,
-            data: liquidity_event,
+            data,
         };
 
-        // Store in database
         self.repository.insert_liquidity_increased_event(event_record).await?;
-
         Ok(())
     }
 
-    /// Handle a liquidity decreased event
     async fn handle_liquidity_decreased_event(
         &self,
-        log: &RpcLogsResponse,
-        event: OrcaWhirlpoolLiquidityDecreasedEvent
+        event: OrcaWhirlpoolLiquidityDecreasedEvent,
+        signature: String
     ) -> Result<()> {
-        println!(
-            "Liquidity decreased for pool {}: token_a={}, token_b={}",
-            event.whirlpool,
-            event.token_a_amount,
-            event.token_b_amount
-        );
+        // Create a new OrcaWhirlpoolEvent without ID and timestamp
+        // These will be set by the database when inserting
+        let base_event = OrcaWhirlpoolEvent {
+            id: 0, // Will be set by database
+            signature,
+            whirlpool: event.whirlpool.to_string(),
+            event_type: OrcaWhirlpoolEventType::LiquidityDecreased.to_string(),
+            version: 1,
+            timestamp: chrono::Utc::now(), // Will be overwritten by database
+        };
 
-        // Create base event record
-        let base_event = OrcaWhirlpoolEvent::new(
-            log.signature.clone(),
-            event.whirlpool,
-            OrcaWhirlpoolEventType::LiquidityDecreased
-        );
-
-        // Create liquidity event record
-        let liquidity_event = OrcaWhirlpoolLiquidityRecord {
-            event_id: 0, // Will be set by the database
+        // Create the data record without event_id
+        // This will be set by the repository after the base event is inserted
+        let data = OrcaWhirlpoolLiquidityRecord {
+            event_id: 0, // Will be set after base event is inserted
             position: event.position.to_string(),
             tick_lower_index: event.tick_lower_index,
             tick_upper_index: event.tick_upper_index,
@@ -565,148 +678,220 @@ impl OrcaWhirlpoolIndexer {
             token_b_transfer_fee: event.token_b_transfer_fee as i64,
         };
 
-        // Create composite record
         let event_record = OrcaWhirlpoolLiquidityDecreasedEventRecord {
             base: base_event,
-            data: liquidity_event,
+            data,
         };
 
-        // Store in database
         self.repository.insert_liquidity_decreased_event(event_record).await?;
-
         Ok(())
     }
 
-    /// Backfill events for a single pool
-    #[allow(dead_code)]
-    async fn backfill_pool(&self, rpc_client: &RpcClient, pool_pubkey: &Pubkey) -> Result<()> {
-        println!("Backfilling events for pool {}...", pool_pubkey);
-
-        let signatures = match
-            rpc_client.get_signatures_for_address_with_config(
-                pool_pubkey,
-                GetConfirmedSignaturesForAddress2Config {
-                    limit: Some(50), // Get more historical data
-                    ..Default::default()
-                }
-            ).await
-        {
-            Ok(sigs) => sigs,
-            Err(e) => {
-                eprintln!("Error fetching signatures for pool {}: {:#}", pool_pubkey, e);
-                return Ok(()); // Continue without failing the entire process
+    fn extract_event_data(&self, log_message: &str) -> Option<Vec<u8>> {
+        let parts: Vec<&str> = log_message.split("Program data: ").collect();
+        if parts.len() >= 2 {
+            if let Ok(decoded) = general_purpose::STANDARD.decode(parts[1]) {
+                return Some(decoded);
             }
-        };
+        }
+        None
+    }
 
-        println!("Fetched {} signatures", signatures.len());
+    fn log_traded_event(&self, event: &OrcaWhirlpoolTradedEvent) {
+        println!(
+            "Traded event: Pool {}, A→B: {}, Amount in: {}, Amount out: {}",
+            event.whirlpool.to_string(),
+            event.a_to_b,
+            event.input_amount,
+            event.output_amount
+        );
+    }
 
-        for sig_info in signatures {
-            let tx = match Signature::from_str(&sig_info.signature) {
-                Ok(sig) => {
-                    match
-                        rpc_client.get_transaction_with_config(&sig, RpcTransactionConfig {
-                            encoding: Some(UiTransactionEncoding::JsonParsed),
-                            commitment: Some(CommitmentConfig::confirmed()),
-                            max_supported_transaction_version: Some(0),
-                        }).await
-                    {
-                        Ok(tx) => tx,
-                        Err(e) => {
-                            eprintln!("Error fetching transaction {}: {:#}", sig_info.signature, e);
-                            continue; // Skip this transaction but continue with others
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error parsing signature {}: {:#}", sig_info.signature, e);
-                    continue; // Skip this transaction but continue with others
-                }
-            };
+    fn log_liquidity_increased_event(&self, event: &OrcaWhirlpoolLiquidityIncreasedEvent) {
+        println!(
+            "Liquidity Increased: Pool {}, Position {}, TokenA: {}, TokenB: {}",
+            event.whirlpool.to_string(),
+            event.position.to_string(),
+            event.token_a_amount,
+            event.token_b_amount
+        );
+    }
 
-            if let Some(meta) = tx.transaction.meta {
-                if let Some(log_messages) = Into::<Option<Vec<String>>>::into(meta.log_messages) {
-                    for log in log_messages {
-                        if log.starts_with("Program data: ") {
-                            if let Some(event_bytes) = self.extract_event_data(&log) {
-                                if event_bytes.len() < 8 {
-                                    continue;
+    fn log_liquidity_decreased_event(&self, event: &OrcaWhirlpoolLiquidityDecreasedEvent) {
+        println!(
+            "Liquidity Decreased: Pool {}, Position {}, TokenA: {}, TokenB: {}",
+            event.whirlpool.to_string(),
+            event.position.to_string(),
+            event.token_a_amount,
+            event.token_b_amount
+        );
+    }
+
+    // Collect events for batch insertion
+    async fn collect_events_from_log(
+        &self,
+        log: &RpcLogsResponse,
+        active_pools: &Arc<RwLock<HashSet<Pubkey>>>,
+        traded_events: &mut Vec<OrcaWhirlpoolTradedEventRecord>,
+        liquidity_increased_events: &mut Vec<OrcaWhirlpoolLiquidityIncreasedEventRecord>,
+        liquidity_decreased_events: &mut Vec<OrcaWhirlpoolLiquidityDecreasedEventRecord>
+    ) -> Result<bool> {
+        // Quick initial check for relevant event keywords
+        let contains_relevant_events = log.logs
+            .iter()
+            .any(|line| {
+                line.contains("Swap") ||
+                    line.contains("IncreaseLiquidity") ||
+                    line.contains("DecreaseLiquidity")
+            });
+
+        if !contains_relevant_events {
+            return Ok(false);
+        }
+
+        let mut found_events = false;
+
+        // Extract and process events
+        let log_lines: Vec<&str> = log.logs
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+
+        // Find a mention of a whirlpool address that matches our active pools
+        for line in &log_lines {
+            if line.contains("Program data:") {
+                // Extract the binary data part
+                if let Some(data) = self.extract_event_data(line) {
+                    if data.len() >= 8 {
+                        // Get the discriminator (first 8 bytes)
+                        let discriminator = &data[0..8];
+
+                        // Using if-else statements with slice comparisons instead of match
+                        if discriminator == &TRADED_EVENT_DISCRIMINATOR[..] {
+                            if let Ok(event) = OrcaWhirlpoolTradedEvent::try_from_slice(&data[8..]) {
+                                // Check if this pool is in our watch list
+                                let active_pools_guard = active_pools.read().unwrap();
+                                if active_pools_guard.contains(&event.whirlpool) {
+                                    // Release the read lock before processing
+                                    drop(active_pools_guard);
+
+                                    // Create the event record and add to batch
+                                    let base_event = OrcaWhirlpoolEvent {
+                                        id: 0, // Will be set by database
+                                        signature: log.signature.clone(),
+                                        whirlpool: event.whirlpool.to_string(),
+                                        event_type: OrcaWhirlpoolEventType::Traded.to_string(),
+                                        version: 1,
+                                        timestamp: chrono::Utc::now(), // Will be overwritten by database
+                                    };
+
+                                    let data = OrcaWhirlpoolTradedRecord {
+                                        event_id: 0, // Will be set after base event is inserted
+                                        a_to_b: event.a_to_b,
+                                        pre_sqrt_price: event.pre_sqrt_price as i64,
+                                        post_sqrt_price: event.post_sqrt_price as i64,
+                                        input_amount: event.input_amount as i64,
+                                        output_amount: event.output_amount as i64,
+                                        input_transfer_fee: event.input_transfer_fee as i64,
+                                        output_transfer_fee: event.output_transfer_fee as i64,
+                                        lp_fee: event.lp_fee as i64,
+                                        protocol_fee: event.protocol_fee as i64,
+                                    };
+
+                                    let event_record = OrcaWhirlpoolTradedEventRecord {
+                                        base: base_event,
+                                        data,
+                                    };
+
+                                    self.log_traded_event(&event);
+                                    traded_events.push(event_record);
+                                    found_events = true;
                                 }
+                            }
+                        } else if discriminator == &LIQUIDITY_INCREASED_DISCRIMINATOR[..] {
+                            if
+                                let Ok(event) =
+                                    OrcaWhirlpoolLiquidityIncreasedEvent::try_from_slice(&data[8..])
+                            {
+                                // Check if this pool is in our watch list
+                                let active_pools_guard = active_pools.read().unwrap();
+                                if active_pools_guard.contains(&event.whirlpool) {
+                                    // Release the read lock before processing
+                                    drop(active_pools_guard);
 
-                                let discriminator = &event_bytes[..8];
-                                let log_response = RpcLogsResponse {
-                                    signature: sig_info.signature.clone(),
-                                    err: None,
-                                    logs: vec![log.clone()],
-                                };
+                                    // Create the event record and add to batch
+                                    let base_event = OrcaWhirlpoolEvent {
+                                        id: 0, // Will be set by database
+                                        signature: log.signature.clone(),
+                                        whirlpool: event.whirlpool.to_string(),
+                                        event_type: OrcaWhirlpoolEventType::LiquidityIncreased.to_string(),
+                                        version: 1,
+                                        timestamp: chrono::Utc::now(), // Will be overwritten by database
+                                    };
 
-                                if discriminator == TRADED_EVENT_DISCRIMINATOR {
-                                    if
-                                        let Ok(event) = OrcaWhirlpoolTradedEvent::try_from_slice(
-                                            &event_bytes[8..]
-                                        )
-                                    {
-                                        if event.whirlpool == *pool_pubkey {
-                                            if
-                                                let Err(e) = self.handle_traded_event(
-                                                    &log_response,
-                                                    event
-                                                ).await
-                                            {
-                                                eprintln!(
-                                                    "Error processing traded event during backfill for pool {}: {:#}",
-                                                    pool_pubkey,
-                                                    e
-                                                );
-                                                // Continue processing instead of returning the error
-                                            }
-                                        }
-                                    }
-                                } else if discriminator == LIQUIDITY_INCREASED_DISCRIMINATOR {
-                                    if
-                                        let Ok(event) =
-                                            OrcaWhirlpoolLiquidityIncreasedEvent::try_from_slice(
-                                                &event_bytes[8..]
-                                            )
-                                    {
-                                        if event.whirlpool == *pool_pubkey {
-                                            if
-                                                let Err(e) = self.handle_liquidity_increased_event(
-                                                    &log_response,
-                                                    event
-                                                ).await
-                                            {
-                                                eprintln!(
-                                                    "Error processing liquidity increased event during backfill for pool {}: {:#}",
-                                                    pool_pubkey,
-                                                    e
-                                                );
-                                                // Continue processing instead of returning the error
-                                            }
-                                        }
-                                    }
-                                } else if discriminator == LIQUIDITY_DECREASED_DISCRIMINATOR {
-                                    if
-                                        let Ok(event) =
-                                            OrcaWhirlpoolLiquidityDecreasedEvent::try_from_slice(
-                                                &event_bytes[8..]
-                                            )
-                                    {
-                                        if event.whirlpool == *pool_pubkey {
-                                            if
-                                                let Err(e) = self.handle_liquidity_decreased_event(
-                                                    &log_response,
-                                                    event
-                                                ).await
-                                            {
-                                                eprintln!(
-                                                    "Error processing liquidity decreased event during backfill for pool {}: {:#}",
-                                                    pool_pubkey,
-                                                    e
-                                                );
-                                                // Continue processing instead of returning the error
-                                            }
-                                        }
-                                    }
+                                    let data = OrcaWhirlpoolLiquidityRecord {
+                                        event_id: 0, // Will be set after base event is inserted
+                                        position: event.position.to_string(),
+                                        tick_lower_index: event.tick_lower_index,
+                                        tick_upper_index: event.tick_upper_index,
+                                        liquidity: event.liquidity as i64,
+                                        token_a_amount: event.token_a_amount as i64,
+                                        token_b_amount: event.token_b_amount as i64,
+                                        token_a_transfer_fee: event.token_a_transfer_fee as i64,
+                                        token_b_transfer_fee: event.token_b_transfer_fee as i64,
+                                    };
+
+                                    let event_record = OrcaWhirlpoolLiquidityIncreasedEventRecord {
+                                        base: base_event,
+                                        data,
+                                    };
+
+                                    self.log_liquidity_increased_event(&event);
+                                    liquidity_increased_events.push(event_record);
+                                    found_events = true;
+                                }
+                            }
+                        } else if discriminator == &LIQUIDITY_DECREASED_DISCRIMINATOR[..] {
+                            if
+                                let Ok(event) =
+                                    OrcaWhirlpoolLiquidityDecreasedEvent::try_from_slice(&data[8..])
+                            {
+                                // Check if this pool is in our watch list
+                                let active_pools_guard = active_pools.read().unwrap();
+                                if active_pools_guard.contains(&event.whirlpool) {
+                                    // Release the read lock before processing
+                                    drop(active_pools_guard);
+
+                                    // Create the event record and add to batch
+                                    let base_event = OrcaWhirlpoolEvent {
+                                        id: 0, // Will be set by database
+                                        signature: log.signature.clone(),
+                                        whirlpool: event.whirlpool.to_string(),
+                                        event_type: OrcaWhirlpoolEventType::LiquidityDecreased.to_string(),
+                                        version: 1,
+                                        timestamp: chrono::Utc::now(), // Will be overwritten by database
+                                    };
+
+                                    let data = OrcaWhirlpoolLiquidityRecord {
+                                        event_id: 0, // Will be set after base event is inserted
+                                        position: event.position.to_string(),
+                                        tick_lower_index: event.tick_lower_index,
+                                        tick_upper_index: event.tick_upper_index,
+                                        liquidity: event.liquidity as i64,
+                                        token_a_amount: event.token_a_amount as i64,
+                                        token_b_amount: event.token_b_amount as i64,
+                                        token_a_transfer_fee: event.token_a_transfer_fee as i64,
+                                        token_b_transfer_fee: event.token_b_transfer_fee as i64,
+                                    };
+
+                                    let event_record = OrcaWhirlpoolLiquidityDecreasedEventRecord {
+                                        base: base_event,
+                                        data,
+                                    };
+
+                                    self.log_liquidity_decreased_event(&event);
+                                    liquidity_decreased_events.push(event_record);
+                                    found_events = true;
                                 }
                             }
                         }
@@ -715,22 +900,6 @@ impl OrcaWhirlpoolIndexer {
             }
         }
 
-        Ok(())
-    }
-
-    /// Extract event data from a log message
-    fn extract_event_data(&self, log_message: &str) -> Option<Vec<u8>> {
-        if let Some(data_start) = log_message.find("Program data: ") {
-            let data_str = &log_message[data_start + 14..].trim();
-            match general_purpose::STANDARD.decode(data_str) {
-                Ok(decoded) => Some(decoded),
-                Err(e) => {
-                    println!("Failed to decode base64: {}", e);
-                    None
-                }
-            }
-        } else {
-            None
-        }
+        Ok(found_events)
     }
 }
