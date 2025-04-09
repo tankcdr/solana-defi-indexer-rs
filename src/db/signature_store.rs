@@ -119,12 +119,12 @@ impl DbSignatureStore {
         sqlx
             ::query(
                 r#"
-            INSERT INTO apestrong.last_signatures (pool_address, signature, dex_type, last_updated)
-            VALUES ($1, $2, $3, NOW())
+            INSERT INTO apestrong.last_signatures (pool_address, signature, dex, last_updated)
+            VALUES ($1, $2, $3::apestrong.dex_type, NOW())
             ON CONFLICT (pool_address) 
             DO UPDATE SET 
                 signature = $2,
-                dex_type = $3,
+                dex = $3::apestrong.dex_type,
                 last_updated = NOW()
             "#
             )
@@ -148,7 +148,7 @@ impl DbSignatureStore {
                 r#"
             SELECT signature 
             FROM apestrong.last_signatures 
-            WHERE pool_address = $1 AND dex_type = $2
+            WHERE pool_address = $1 AND dex = $2::apestrong.dex_type
             "#
             )
             .bind(pool.to_string())
@@ -179,7 +179,7 @@ impl DbSignatureStore {
                 r#"
             SELECT 1 
             FROM apestrong.last_signatures 
-            WHERE pool_address = $1 AND dex_type = $2
+            WHERE pool_address = $1 AND dex = $2::apestrong.dex_type
             "#
             )
             .bind(pool.to_string())
@@ -199,7 +199,7 @@ impl DbSignatureStore {
                 r#"
             SELECT pool_address 
             FROM apestrong.last_signatures 
-            WHERE dex_type = $1
+            WHERE dex = $1::apestrong.dex_type
             "#
             )
             .bind(dex_type)

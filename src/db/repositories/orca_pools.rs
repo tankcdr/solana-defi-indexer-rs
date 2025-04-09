@@ -32,9 +32,18 @@ impl OrcaWhirlpoolPoolRepository {
     pub async fn get_all_pools(&self) -> Result<Vec<OrcaWhirlpoolPool>> {
         let rows = sqlx
             ::query(
-                "SELECT whirlpool, token_mint_a, token_mint_b, token_name_a, token_name_b,
-                 pool_name, decimals_a, decimals_b
-                 FROM apestrong.orca_whirlpool_pools"
+                "SELECT p.pool_mint as whirlpool, 
+                        p.token_a_mint as token_mint_a, 
+                        p.token_b_mint as token_mint_b, 
+                        p.pool_name,
+                        ta.token_name as token_name_a, 
+                        tb.token_name as token_name_b,
+                        ta.decimals as decimals_a, 
+                        tb.decimals as decimals_b
+                 FROM apestrong.subscribed_pools p
+                 LEFT JOIN apestrong.token_metadata ta ON p.token_a_mint = ta.mint
+                 LEFT JOIN apestrong.token_metadata tb ON p.token_b_mint = tb.mint
+                 WHERE p.dex = 'orca'"
             )
             .fetch_all(&self.pool).await
             .context("Failed to fetch Orca Whirlpool pools")?;
@@ -60,10 +69,18 @@ impl OrcaWhirlpoolPoolRepository {
     pub async fn get_pool(&self, whirlpool_address: &str) -> Result<Option<OrcaWhirlpoolPool>> {
         let row = sqlx
             ::query(
-                "SELECT whirlpool, token_mint_a, token_mint_b, token_name_a, token_name_b,
-                 pool_name, decimals_a, decimals_b
-                 FROM apestrong.orca_whirlpool_pools
-                 WHERE whirlpool = $1"
+                "SELECT p.pool_mint as whirlpool, 
+                        p.token_a_mint as token_mint_a, 
+                        p.token_b_mint as token_mint_b, 
+                        p.pool_name,
+                        ta.token_name as token_name_a, 
+                        tb.token_name as token_name_b,
+                        ta.decimals as decimals_a, 
+                        tb.decimals as decimals_b
+                 FROM apestrong.subscribed_pools p
+                 LEFT JOIN apestrong.token_metadata ta ON p.token_a_mint = ta.mint
+                 LEFT JOIN apestrong.token_metadata tb ON p.token_b_mint = tb.mint
+                 WHERE p.pool_mint = $1 AND p.dex = 'orca'"
             )
             .bind(whirlpool_address)
             .fetch_optional(&self.pool).await
@@ -89,32 +106,58 @@ impl OrcaWhirlpoolPoolRepository {
 
     /// Add or update a pool
     pub async fn upsert_pool(&self, pool: &OrcaWhirlpoolPool) -> Result<()> {
+        // Start a transaction
+        let mut tx = self.pool.begin().await?;
+
+        // First, ensure token metadata exists for both tokens
+        for (mint, name, decimals, is_a) in [
+            (&pool.token_mint_a, &pool.token_name_a, pool.decimals_a, true),
+            (&pool.token_mint_b, &pool.token_name_b, pool.decimals_b, false),
+        ] {
+            sqlx
+                ::query(
+                    "INSERT INTO apestrong.token_metadata (mint, token_name, decimals, last_updated)
+                 VALUES ($1, $2, $3, NOW())
+                 ON CONFLICT (mint) DO UPDATE SET
+                 token_name = EXCLUDED.token_name,
+                 decimals = EXCLUDED.decimals,
+                 last_updated = NOW()"
+                )
+                .bind(mint)
+                .bind(name)
+                .bind(decimals)
+                .execute(&mut *tx).await
+                .context(
+                    format!("Failed to insert token metadata for token_{}", if is_a {
+                        "a"
+                    } else {
+                        "b"
+                    })
+                )?;
+        }
+
+        // Then insert or update the pool
         sqlx
             ::query(
-                "INSERT INTO apestrong.orca_whirlpool_pools
-             (whirlpool, token_mint_a, token_mint_b, token_name_a, token_name_b, pool_name,
-              decimals_a, decimals_b, last_updated)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-             ON CONFLICT (whirlpool) DO UPDATE SET
-               token_mint_a = EXCLUDED.token_mint_a,
-               token_mint_b = EXCLUDED.token_mint_b,
-               token_name_a = EXCLUDED.token_name_a,
-               token_name_b = EXCLUDED.token_name_b,
-               pool_name = EXCLUDED.pool_name,
-               decimals_a = EXCLUDED.decimals_a,
-               decimals_b = EXCLUDED.decimals_b,
-               last_updated = NOW()"
+                "INSERT INTO apestrong.subscribed_pools
+             (pool_mint, pool_name, dex, token_a_mint, token_b_mint, last_updated)
+             VALUES ($1, $2, 'orca', $3, $4, NOW())
+             ON CONFLICT (pool_mint) DO UPDATE SET
+             pool_name = EXCLUDED.pool_name,
+             dex = EXCLUDED.dex,
+             token_a_mint = EXCLUDED.token_a_mint,
+             token_b_mint = EXCLUDED.token_b_mint,
+             last_updated = NOW()"
             )
             .bind(&pool.whirlpool)
+            .bind(&pool.pool_name)
             .bind(&pool.token_mint_a)
             .bind(&pool.token_mint_b)
-            .bind(&pool.token_name_a)
-            .bind(&pool.token_name_b)
-            .bind(&pool.pool_name)
-            .bind(pool.decimals_a)
-            .bind(pool.decimals_b)
-            .execute(&self.pool).await
+            .execute(&mut *tx).await
             .context("Failed to insert or update pool")?;
+
+        // Commit the transaction
+        tx.commit().await?;
 
         Ok(())
     }
@@ -123,7 +166,7 @@ impl OrcaWhirlpoolPoolRepository {
     pub async fn pool_exists(&self, whirlpool_address: &str) -> Result<bool> {
         let exists: (bool,) = sqlx
             ::query_as(
-                "SELECT EXISTS(SELECT 1 FROM apestrong.orca_whirlpool_pools WHERE whirlpool = $1)"
+                "SELECT EXISTS(SELECT 1 FROM apestrong.subscribed_pools WHERE pool_mint = $1 AND dex = 'orca')"
             )
             .bind(whirlpool_address)
             .fetch_one(&self.pool).await
@@ -135,7 +178,9 @@ impl OrcaWhirlpoolPoolRepository {
     /// Get all pool pubkeys as a HashSet
     pub async fn get_pool_pubkeys(&self) -> Result<HashSet<Pubkey>> {
         let rows = sqlx
-            ::query("SELECT whirlpool FROM apestrong.orca_whirlpool_pools")
+            ::query(
+                "SELECT pool_mint as whirlpool FROM apestrong.subscribed_pools WHERE dex = 'orca'"
+            )
             .fetch_all(&self.pool).await
             .context("Failed to fetch pool addresses")?;
 
