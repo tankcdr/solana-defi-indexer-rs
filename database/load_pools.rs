@@ -247,9 +247,9 @@ async fn save_pool_to_database(
         ::query(
             "INSERT INTO apestrong.subscribed_pools 
          (pool_mint, pool_name, dex, token_a_mint, token_b_mint, last_updated)
-         VALUES ($1, $2, $3::dex_type, $4, $5, NOW())
+         VALUES ($1, $2, $3::apestrong.dex_type, $4, $5, NOW())
          ON CONFLICT (pool_mint) DO UPDATE
-         SET pool_name = $2, dex = $3::dex_type, token_a_mint = $4, token_b_mint = $5, last_updated = NOW()"
+         SET pool_name = $2, dex = $3::apestrong.dex_type, token_a_mint = $4, token_b_mint = $5, last_updated = NOW()"
         )
         .bind(pool_record.pool_address.to_string())
         .bind(&pool_record.pool_name)
