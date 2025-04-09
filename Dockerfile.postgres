@@ -1,20 +1,27 @@
-FROM postgres:14
+FROM postgres:16-alpine
 
 # Set environment variables
 ENV POSTGRES_PASSWORD=postgres
 ENV POSTGRES_USER=postgres
 ENV POSTGRES_DB=postgres
+ENV DEX_TYPE=all
 
-# Create directory for database configuration files
-RUN mkdir -p /opt/indexer/database/config
+# Create directory for database files
+RUN mkdir -p /opt/indexer/database/schema/common \
+    /opt/indexer/database/schema/orca \
+    /opt/indexer/database/schema/raydium
 
-# Copy database files
-COPY database/schema.sql /docker-entrypoint-initdb.d/
-COPY database/init_database.sh /docker-entrypoint-initdb.d/
+# Copy schema files for each DEX into the appropriate directories
+COPY database/schema/common/ /opt/indexer/database/schema/common/
+COPY database/schema/orca/ /opt/indexer/database/schema/orca/
+COPY database/schema/raydium/ /opt/indexer/database/schema/raydium/
 
-# Set permissions to make the scripts executable
-RUN chmod 644 /docker-entrypoint-initdb.d/schema.sql
-RUN chmod 755 /docker-entrypoint-initdb.d/init_database.sh
+# Copy the initialization script
+COPY database/init_database.sh /docker-entrypoint-initdb.d/init_database.sh
 
-# Create symbolic link for config access from init script
+# Set proper permissions for the init script
+RUN chmod 755 /docker-entrypoint-initdb.d/init_database.sh && \
+    chown postgres:postgres /docker-entrypoint-initdb.d/init_database.sh
+
+# Create symbolic link for database access from init script
 RUN ln -s /opt/indexer/database /docker-entrypoint-initdb.d/database

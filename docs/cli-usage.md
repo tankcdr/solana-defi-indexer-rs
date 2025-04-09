@@ -13,7 +13,7 @@ indexer [global options] <command> [command options]
 Where:
 
 - `[global options]` are options that apply to all indexers
-- `<command>` is the specific indexer to run (e.g., `orca`)
+- `<command>` is the specific indexer to run (e.g., `orca`, `raydium`)
 - `[command options]` are options specific to the chosen indexer
 
 ## Global Options
@@ -36,6 +36,18 @@ indexer orca [options]
 Options:
 
 - `--pools <ADDRESSES>`: Comma-separated list of pool addresses to index (default: Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE, which is the SOL/USDC pool)
+
+### Raydium Indexer
+
+Run the Raydium concentrated liquidity indexer:
+
+```
+indexer raydium [options]
+```
+
+Options:
+
+- `--pools <ADDRESSES>`: Comma-separated list of pool addresses to index (refer to the default pools in `database/schema/raydium/subscribed_pools.txt`)
 
 ## Examples
 
@@ -63,6 +75,31 @@ cargo run -- --rpc-url https://solana-api.projectserum.com --ws-url wss://solana
 cargo run -- orca --pools Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE,7qbRF6YsyGuLUVs6Y1q64bdVrfe4ZcUUz1JRdoVNUJnm
 ```
 
+### Run the Raydium indexer with custom pools
+
+```bash
+cargo run -- raydium --pools RaydiumPoolAddress1,RaydiumPoolAddress2
+```
+
+### Run with Docker
+
+For Docker-based deployments, use environment variables to configure the indexer:
+
+```bash
+# Basic usage with default pools
+DEX_TYPE=orca docker compose up -d
+
+# With custom RPC endpoints
+SOLANA_RPC_URL=https://custom-rpc.example.com \
+SOLANA_WS_URL=wss://custom-rpc.example.com \
+DEX_TYPE=raydium docker compose up -d
+```
+
+To customize pool addresses with Docker, you'll need to either:
+
+1. Modify the `subscribed_pools.txt` files before building the containers
+2. Modify the command in the `docker-compose.yml` file
+
 ## Environment Variables vs Command Line
 
 The indexer uses configuration from multiple sources in this priority order:
@@ -80,7 +117,16 @@ The indexer codebase includes a protection mechanism for critical files:
 1. **Protected File Headers**: Core implementation files include warning headers.
 2. **Configuration File**: A `.nooverwrite.json` file at the project root lists protected files.
 
-### Protected File Header Example
+### Protected Files System
+
+The indexer codebase includes a protection mechanism for critical files:
+
+1. **Protected File Headers**: Core implementation files include warning headers.
+2. **Configuration File**: A `.nooverwrite.json` file at the project root lists protected files.
+
+This system helps prevent accidental modifications to critical components.
+
+#### Protected File Header Example
 
 ```rust
 /******************************************************************************
@@ -93,7 +139,7 @@ The indexer codebase includes a protection mechanism for critical files:
  ******************************************************************************/
 ```
 
-### .nooverwrite.json Format
+#### .nooverwrite.json Format
 
 ```json
 {
@@ -109,13 +155,31 @@ The indexer codebase includes a protection mechanism for critical files:
 }
 ```
 
+## Database Utilities
+
+The indexer includes utilities for managing the database schema and pools:
+
+```bash
+# Database schema management
+./database/dbutil.sh create all    # Create all schemas
+./database/dbutil.sh create orca   # Create only Orca schema
+./database/dbutil.sh delete all    # Delete all schemas (with confirmation)
+
+# Pool management
+./database/load_pools.sh all       # Load pools for all DEXes
+./database/load_pools.sh orca      # Load only Orca pools
+```
+
+For more details, see the [Database Utilities Documentation](../database/README.md).
+
 ## Adding New Indexers
 
 To add support for a new DEX indexer:
 
 1. Follow the instructions in [Adding a New DEX](./add-new-dex.md)
-2. Update `main.rs` to add a new subcommand for the indexer
-3. Add command-line argument processing for the new indexer's options
+2. Create the necessary database schema in `database/schema/<dex_name>/`
+3. Update `main.rs` to add a new subcommand for the indexer
+4. Add command-line argument processing for the new indexer's options
 
 After implementing a new indexer, users can run it with:
 

@@ -33,9 +33,10 @@ RUN apt-get update && \
 COPY --from=builder /usr/src/app/target/release/indexer /app/indexer
 RUN chmod +x /app/indexer
 
-# Create a small wrapper script
+# Create a small wrapper script that handles DEX_TYPE
 RUN echo '#!/bin/bash\n\
-exec /app/indexer --rpc-url "$SOLANA_RPC_URL" --ws-url "$SOLANA_WS_URL" "$@"' > /app/start.sh && \
+DEX_TYPE=${DEX_TYPE:-orca}\n\
+exec /app/indexer --rpc-url "$SOLANA_RPC_URL" --ws-url "$SOLANA_WS_URL" "$DEX_TYPE" "$@"' > /app/start.sh && \
     chmod +x /app/start.sh
 
 # Set environment variables with default values
@@ -44,9 +45,10 @@ ENV DATABASE_MAX_CONNECTIONS=5
 ENV DATABASE_CONNECT_TIMEOUT=30
 ENV SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
 ENV SOLANA_WS_URL=wss://api.mainnet-beta.solana.com
+ENV DEX_TYPE=orca
 
 RUN ls -la /app
 
 # Use the wrapper script as the entrypoint
 ENTRYPOINT ["/app/start.sh"]
-CMD ["orca"]
+# No CMD needed as the DEX_TYPE is handled in the wrapper script

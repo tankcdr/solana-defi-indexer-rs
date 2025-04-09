@@ -31,15 +31,18 @@ services:
       - DATABASE_CONNECT_TIMEOUT=30
       - SOLANA_RPC_URL=${SOLANA_RPC_URL:-https://api.mainnet-beta.solana.com}
       - SOLANA_WS_URL=${SOLANA_WS_URL:-wss://api.mainnet-beta.solana.com}
+      - DEX_TYPE=${DEX_TYPE:-orca}
     volumes:
-      - ./database/config:/app/database/config
+      - ./database/schema:/app/database/schema
     # Run once and exit
     restart: "no"
+    # Pass DEX_TYPE as a command argument
+    command: ["${DEX_TYPE:-orca}"]
 
-  orca-indexer:
+  dex-indexer:
     build:
       context: .
-      dockerfile: Dockerfile.orca
+      dockerfile: Dockerfile.indexer
     depends_on:
       db:
         condition: service_healthy
@@ -51,6 +54,7 @@ services:
       - DATABASE_CONNECT_TIMEOUT=30
       - SOLANA_RPC_URL=${SOLANA_RPC_URL:-https://api.mainnet-beta.solana.com}
       - SOLANA_WS_URL=${SOLANA_WS_URL:-wss://api.mainnet-beta.solana.com}
+      - DEX_TYPE=${DEX_TYPE:-orca}
     restart: unless-stopped
 
 volumes:

@@ -16,7 +16,15 @@ Let's go through each step in detail using a hypothetical "Raydium" DEX as an ex
 
 ## 1. Database Schema
 
-First, create database tables for the new DEX's events in `database/schema.sql`:
+First, create a directory for the new DEX's schema files:
+
+```bash
+mkdir -p database/schema/raydium
+```
+
+Then create the schema files for the new DEX:
+
+1. `database/schema/raydium/schema.sql` - Schema creation SQL:
 
 ```sql
 -- Base table for Raydium events
@@ -56,10 +64,37 @@ WHERE
     e.event_type = 'Swap';
 ```
 
-Run the setup script to apply these schema changes:
+2. `database/schema/raydium/delete.sql` - Schema deletion SQL:
+
+```sql
+-- Drop views first
+DROP VIEW IF EXISTS apestrong.v_raydium_concentrated_swap;
+
+-- Drop event-specific tables
+DROP TABLE IF EXISTS apestrong.raydium_swap_events;
+
+-- Drop base table
+DROP TABLE IF EXISTS apestrong.raydium_concentrated_events;
+```
+
+3. `database/schema/raydium/subscribed_pools.txt` - Pools to monitor:
+
+```
+# Example Raydium Concentrated Liquidity Pools
+# SOL-USDC Pool
+RaydiumPoolAddress1
+# Another pool
+RaydiumPoolAddress2
+```
+
+Apply the schema changes using the database utilities:
 
 ```bash
-cargo run --bin setup_db
+# Create just the Raydium schema
+./database/dbutil.sh create raydium
+
+# Or update all schemas
+./database/dbutil.sh create all
 ```
 
 ## 2. Define Models
@@ -673,13 +708,58 @@ pub use indexers::RaydiumIndexer;
 
 ## 7. Testing
 
+### Local Testing
+
 After implementing these changes, test that your new DEX integration works:
 
-1. Update the database schema: `cargo run --bin setup_db`
-2. Run the Raydium indexer: `cargo run -- raydium`
-3. Verify that events are being captured in the database:
+1. Update the database schema:
+
+   ```bash
+   ./database/dbutil.sh create raydium
+   ```
+
+2. Load pool addresses:
+
+   ```bash
+   ./database/load_pools.sh raydium
+   ```
+
+3. Run the Raydium indexer:
+
+   ```bash
+   cargo run -- raydium
+   ```
+
+4. Verify that events are being captured in the database:
    ```sql
    SELECT * FROM apestrong.raydium_concentrated_events LIMIT 10;
+   ```
+
+### Docker Testing
+
+You can also test your implementation using Docker:
+
+1. Build the Docker images with your new DEX implementation:
+
+   ```bash
+   docker compose build
+   ```
+
+2. Run the stack with your new DEX type:
+
+   ```bash
+   DEX_TYPE=raydium docker compose up -d
+   ```
+
+3. Check the logs to verify operation:
+
+   ```bash
+   docker compose logs -f
+   ```
+
+4. Connect to the database to verify event capture:
+   ```bash
+   docker exec -it prediction-market-indexer_db_1 psql -U postgres -c "SELECT * FROM apestrong.raydium_concentrated_events LIMIT 10;"
    ```
 
 ## 8. Update Protection Settings
@@ -711,6 +791,43 @@ Add the new protected files to `.nooverwrite.json`:
 }
 ```
 
+## 9. Docker Integration
+
+If using Docker, ensure your new DEX is properly integrated:
+
+1. Update environment handling in `Dockerfile.indexer` if needed
+2. Test the DEX_TYPE environment variable recognition
+3. Verify that pool loading works correctly in the Docker environment
+
+You can add a dedicated section to the `docs/docker-setup.md` documentation explaining how to use your new DEX with Docker:
+
+````markdown
+### Running Raydium Indexer with Docker
+
+To run the Raydium indexer:
+
+```bash
+DEX_TYPE=raydium docker compose up -d
+```
+````
+
+This will automatically:
+
+1. Create the Raydium schema
+2. Load the pools from `database/schema/raydium/subscribed_pools.txt`
+3. Start the indexer for Raydium events
+
+```
 ## Conclusion
 
+By following this pattern, you can add support for any DEX protocol to the indexer. The modular architecture ensures that each protocol's specific logic is isolated, making maintenance and updates easier.
+
+The system provides multiple ways to interact with your implementation:
+
+1. **CLI-based approach** allows users to easily select which DEX and pools to index
+2. **Docker-based deployment** provides containerized setup with minimal configuration
+3. **Database utilities** make schema management and pool tracking consistent across DEXes
+
+This flexibility ensures that your DEX implementation can be used in various deployment scenarios, from development to production.
 By following this pattern, you can add support for any DEX protocol to the indexer. The modular architecture ensures that each protocol's specific logic is isolated, making maintenance and updates easier. The CLI-based approach allows users to easily select which DEX and pools to index.
+```

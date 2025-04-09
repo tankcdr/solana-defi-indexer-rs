@@ -1,16 +1,61 @@
 # Database Schema Documentation
 
-This document provides comprehensive documentation of the database schema used in the prediction market indexer, specifically focusing on the Orca Whirlpool events. This documentation is intended for TypeScript developers who need to interact with the database.
+This document provides comprehensive documentation of the database schema used in the DEX Event Indexer. The schema is designed to support multiple DEXes with a modular approach.
 
 ## Schema Overview
 
-All database objects are stored in the `apestrong` schema. The database follows a hierarchical design pattern for events:
+The database schema is organized into two main parts:
 
-1. A base table (`orca_whirlpool_events`) stores common fields for all event types
-2. Specialized tables store event-specific data for each event type
-3. Views join the base table with specialized tables for convenient querying
+1. **Common Schema**: Shared tables used across all DEX types
+2. **DEX-specific Schemas**: Tables specific to each supported DEX (currently Orca and Raydium)
 
-## Tables
+All database objects are stored in the `apestrong` schema. The database follows these design principles:
+
+1. **Modular Design**: Each DEX has its own set of tables that can be created or dropped independently
+2. **Hierarchical Structure**: Within each DEX schema, a base table stores common fields, and specialized tables store event-specific data
+3. **Convenience Views**: Views join the base tables with specialized tables for easier querying
+4. **Common Tracking**: Shared tables track tokens, subscribed pools, and processed signatures across all DEXes
+
+## Common Schema Tables
+
+### `apestrong.token_metadata`
+
+Stores information about tokens across all DEXes.
+
+| Column     | Type         | Description                      |
+| ---------- | ------------ | -------------------------------- |
+| address    | VARCHAR(44)  | Token mint address (primary key) |
+| name       | VARCHAR(128) | Token name                       |
+| symbol     | VARCHAR(32)  | Token symbol                     |
+| decimals   | INT          | Token decimal places             |
+| logo_uri   | TEXT         | URI to token logo (optional)     |
+| updated_at | TIMESTAMPTZ  | When the record was last updated |
+
+### `apestrong.subscribed_pools`
+
+Tracks all pools being monitored by the indexer.
+
+| Column   | Type        | Description                          |
+| -------- | ----------- | ------------------------------------ |
+| id       | SERIAL      | Primary key                          |
+| address  | VARCHAR(44) | Pool address                         |
+| dex      | VARCHAR(32) | DEX type (e.g., "orca", "raydium")   |
+| token_a  | VARCHAR(44) | Token A address                      |
+| token_b  | VARCHAR(44) | Token B address                      |
+| added_at | TIMESTAMPTZ | When the pool was added for indexing |
+
+### `apestrong.last_signatures`
+
+Tracks the last processed transaction signature for each pool.
+
+| Column     | Type        | Description                          |
+| ---------- | ----------- | ------------------------------------ |
+| pool       | VARCHAR(44) | Pool address (primary key)           |
+| dex        | VARCHAR(32) | DEX type                             |
+| signature  | VARCHAR(88) | Last processed transaction signature |
+| updated_at | TIMESTAMPTZ | When the signature was last updated  |
+
+## Orca Schema Tables
 
 ### Base Table: `apestrong.orca_whirlpool_events`
 
@@ -73,6 +118,67 @@ Stores details for liquidity removal events.
 | token_b_amount       | BIGINT      | Amount of token B removed                     |
 | token_a_transfer_fee | BIGINT      | Fee charged for token A transfer              |
 | token_b_transfer_fee | BIGINT      | Fee charged for token B transfer              |
+
+## Raydium Schema Tables
+
+### Base Table: `apestrong.raydium_concentrated_events`
+
+Stores common information for all Raydium concentrated liquidity events.
+
+| Column     | Type        | Description                                 |
+| ---------- | ----------- | ------------------------------------------- |
+| id         | SERIAL      | Primary key, auto-incrementing identifier   |
+| signature  | VARCHAR(88) | Solana transaction signature (unique)       |
+| pool       | VARCHAR(44) | Pool address                                |
+| event_type | VARCHAR(32) | Type of event (Swap, PositionCreated, etc.) |
+| version    | INT         | Schema version (default: 1)                 |
+| timestamp  | TIMESTAMPTZ | When the event occurred                     |
+
+**Indexes:**
+
+- `idx_raydium_concentrated_events_pool_timestamp` on (pool, timestamp)
+
+### Event Table: `apestrong.raydium_swap_events`
+
+Stores details for Raydium swap events.
+
+| Column           | Type    | Description                               |
+| ---------------- | ------- | ----------------------------------------- |
+| event_id         | INT     | Primary key, references base events table |
+| in_token_amount  | BIGINT  | Amount of input token                     |
+| out_token_amount | BIGINT  | Amount of output token                    |
+| fee_amount       | BIGINT  | Fee amount charged for the swap           |
+| price            | NUMERIC | Price at which the swap occurred          |
+
+### Additional Raydium Tables
+
+Additional tables for Raydium events follow a similar pattern to the Orca tables, with event-specific fields for different event types.
+
+## Cross-DEX Queries
+
+Since all event data is stored in the same database, you can perform queries across multiple DEXes to compare activity.
+
+```sql
+-- Compare swap volume between Orca and Raydium for a specific token pair
+WITH orca_volume AS (
+    SELECT SUM(t.input_amount) as volume
+    FROM apestrong.v_orca_whirlpool_traded t
+    JOIN apestrong.subscribed_pools p ON t.whirlpool = p.address
+    WHERE p.token_a = 'TokenAAddress' AND p.token_b = 'TokenBAddress'
+    AND t.timestamp > NOW() - INTERVAL '24 hours'
+),
+raydium_volume AS (
+    SELECT SUM(s.in_token_amount) as volume
+    FROM apestrong.raydium_concentrated_events e
+    JOIN apestrong.raydium_swap_events s ON e.id = s.event_id
+    JOIN apestrong.subscribed_pools p ON e.pool = p.address
+    WHERE p.token_a = 'TokenAAddress' AND p.token_b = 'TokenBAddress'
+    AND e.timestamp > NOW() - INTERVAL '24 hours'
+)
+SELECT 'Orca' as dex, volume FROM orca_volume
+UNION ALL
+SELECT 'Raydium' as dex, volume FROM raydium_volume;
+```
 
 ## Relationships
 
@@ -212,7 +318,7 @@ ORDER BY
 
 ## TypeScript Interfaces
 
-Here are TypeScript interfaces that correspond to the database schema:
+Here are TypeScript interfaces that correspond to the Orca database schema:
 
 ```typescript
 // Base event interface
@@ -262,6 +368,66 @@ interface OrcaWhirlpoolLiquidityDecreasedView
     OrcaLiquidityDecreasedEvent {}
 ```
 
+## Raydium TypeScript Interfaces
+
+Here are TypeScript interfaces that correspond to the Raydium database schema:
+
+```typescript
+// Base event interface
+interface RaydiumConcentratedEvent {
+  id: number;
+  signature: string;
+  pool: string;
+  event_type: "Swap" | "PositionCreated" | "PositionClosed";
+  version: number;
+  timestamp: Date;
+}
+
+// Swap event interface
+interface RaydiumSwapEvent {
+  event_id: number;
+  in_token_amount: bigint;
+  out_token_amount: bigint;
+  fee_amount: bigint;
+  price: number;
+}
+
+// Combined view interfaces
+interface RaydiumSwapView extends RaydiumConcentratedEvent, RaydiumSwapEvent {}
+```
+
+## Common Tables TypeScript Interfaces
+
+```typescript
+// Token metadata interface
+interface TokenMetadata {
+  address: string;
+  name: string;
+  symbol: string;
+  decimals: number;
+  logo_uri?: string;
+  updated_at: Date;
+}
+
+// Subscribed pool interface
+interface SubscribedPool {
+  id: number;
+  address: string;
+  dex: "orca" | "raydium";
+  token_a: string;
+  token_b: string;
+  added_at: Date;
+}
+
+// Last signature interface
+interface LastSignature {
+  pool: string;
+  dex: string;
+  signature: string;
+  updated_at: Date;
+}
+```
+
 ## Usage Notes
 
 1. **BigInt Handling**: Database fields with type `BIGINT` correspond to TypeScript's `bigint` type. When working with these values in a web context, you may need to convert them to strings since `bigint` doesn't serialize to JSON directly.
@@ -270,6 +436,8 @@ interface OrcaWhirlpoolLiquidityDecreasedView
 
 3. **Solana Addresses**: Addresses are stored as strings rather than byte arrays for easier handling in the database. When using these in Solana transactions, you'll need to convert them to `PublicKey` objects.
 
-4. **Query Performance**: When querying large date ranges, make use of the `idx_orca_whirlpool_events_whirlpool_timestamp` index by including the `whirlpool` column in your WHERE clause.
+4. **Query Performance**: When querying large date ranges, make use of the indexes on pool and timestamp columns by including the pool address in your WHERE clause.
 
-5. **Views vs. Direct Table Access**: For most application needs, using the views (`v_orca_whirlpool_traded`, etc.) is recommended as they provide all the necessary fields in a denormalized format. For complex queries, joining the base tables directly may provide more flexibility.
+5. **Views vs. Direct Table Access**: For most application needs, using the views is recommended as they provide all the necessary fields in a denormalized format. For complex queries, joining the base tables directly may provide more flexibility.
+
+6. **Cross-DEX Queries**: For queries that span multiple DEXes, join through the `subscribed_pools` table to find related pools across different DEXes.

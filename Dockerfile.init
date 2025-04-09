@@ -1,5 +1,5 @@
 # Build stage
-FROM rust:1.84 AS builder
+FROM rust:1.86 AS builder
 
 WORKDIR /usr/src/app
 
@@ -16,8 +16,8 @@ COPY src/ ./src/
 COPY database/ ./database/
 COPY tests/ ./tests/
 
-# Build the final application - pre-build it instead of building at runtime
-RUN cargo build --bin load_orca_pool --release
+# Build the final applications - pre-build them instead of building at runtime
+RUN cargo build --bin load_pools --release
 
 # Runtime stage
 FROM ubuntu:22.04
@@ -30,18 +30,20 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Create necessary directory structure
-RUN mkdir -p /app/database/config
+RUN mkdir -p /app/database/schema/common /app/database/schema/orca /app/database/schema/raydium
 
-# Copy the built executable
-COPY --from=builder /usr/src/app/target/release/load_orca_pool /app/load_orca_pool
-RUN chmod +x /app/load_orca_pool
+# Copy the built executables
+COPY --from=builder /usr/src/app/target/release/load_pools /app/
+RUN chmod +x /app/load_pools 
 
-# Copy the Docker-optimized script
-COPY database/load_orca_pools_docker.sh /app/load_pools.sh
-RUN chmod +x /app/load_pools.sh
+# Copy the Docker-optimized scripts
+COPY database/load_pools_docker.sh /app/
+RUN chmod +x /app/load_pools_docker.sh
 
-# Copy the pools configuration file
-COPY --from=builder /usr/src/app/database/config/orca_pools.txt /app/database/config/
+# Copy the schema directory structure
+COPY --from=builder /usr/src/app/database/schema/common/ /app/database/schema/common/
+COPY --from=builder /usr/src/app/database/schema/orca/ /app/database/schema/orca/
+COPY --from=builder /usr/src/app/database/schema/raydium/ /app/database/schema/raydium/
 
 # Set environment variables with default values
 ENV DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres
@@ -49,9 +51,10 @@ ENV DATABASE_MAX_CONNECTIONS=5
 ENV DATABASE_CONNECT_TIMEOUT=30
 ENV SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
 ENV SOLANA_WS_URL=wss://api.mainnet-beta.solana.com
+ENV DEX_TYPE=all
 
-# Display the final app contents for debugging
-RUN ls -la /app
+# Use the combined initialization script as the entrypoint
+ENTRYPOINT ["/app/load_pools_docker.sh"]
 
-# Use the Docker-optimized wrapper script as the entrypoint
-ENTRYPOINT ["/app/load_pools.sh"]
+# Use 'all' as the default DEX type if none is provided
+CMD ["all"]

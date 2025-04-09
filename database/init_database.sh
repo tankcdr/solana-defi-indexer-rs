@@ -6,9 +6,8 @@
 
 set -e
 
-# Get the directory where the script is located
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
+DIR="/opt/indexer/database"
 # Get the schema argument
 SCHEMA_TYPE="${1:-all}"
 
