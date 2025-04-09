@@ -1,115 +1,155 @@
-# Database Setup Utility
+# Database Utilities and Schema
 
-This directory contains tools for setting up and managing the indexer's database.
+This directory contains tools for setting up and managing the indexer's database across multiple DEXes.
+
+## Directory Structure
+
+- `schema/`: Contains SQL schema definitions organized by DEX
+  - `common/`: Common tables shared across all DEXes
+  - `orca/`: Orca-specific tables and views
+  - `raydium/`: Raydium-specific tables and views
+- `models/`: Contains Rust models for DEX-specific data processing
+  - `mod.rs`: Common interfaces and types
+  - `orca.rs`: Orca-specific implementations
+- Utility scripts and tools for managing the database
 
 ## Schema Overview
 
-The `schema.sql` file defines the database schema using the "apestrong" schema with the following main tables:
+The database is organized into a modular schema structure:
 
-- `apestrong.last_signatures`: Tracks the last seen event signature for each pool to avoid reprocessing
-- `apestrong.orca_whirlpool_pools`: Stores registered pools that the indexer monitors
+### Common Schema (`schema/common/schema.sql`)
+
+- `apestrong.token_metadata`: Stores token information (name, symbol, decimals)
+- `apestrong.subscribed_pools`: Tracks pools from all DEXes that the indexer monitors
+- `apestrong.last_signatures`: Tracks the last seen event signature for each pool
+
+### Orca Schema (`schema/orca/schema.sql`)
+
 - `apestrong.orca_whirlpool_events`: Base table for all Orca Whirlpool events
 - `apestrong.orca_traded_events`: Stores details for trading events
 - `apestrong.orca_liquidity_increased_events`: Stores details for liquidity increase events
 - `apestrong.orca_liquidity_decreased_events`: Stores details for liquidity decrease events
+- Views for easier querying:
+  - `apestrong.v_orca_whirlpool_traded`
+  - `apestrong.v_orca_whirlpool_liquidity_increased`
+  - `apestrong.v_orca_whirlpool_liquidity_decreased`
 
-Additionally, there are views that join these tables for easier querying:
+### Raydium Schema (`schema/raydium/schema.sql`)
 
-- `apestrong.v_orca_whirlpool_traded`
-- `apestrong.v_orca_whirlpool_liquidity_increased`
-- `apestrong.v_orca_whirlpool_liquidity_decreased`
+- Contains Raydium-specific tables and views (implementation in progress)
 
-## Setup Utility
+## Database Utilities
 
-The database setup utility (`setup_db`) provides an easy way to create and update the database schema.
+### Database Schema Management (dbutil)
 
-### Prerequisites
+The database schema utility (`dbutil`) provides commands to create and delete schemas for different DEXes.
+
+```bash
+# Create schemas
+./database/dbutil.sh create all         # Create all schemas
+./database/dbutil.sh create orca        # Create Orca schema (includes common)
+./database/dbutil.sh create raydium     # Create Raydium schema (includes common)
+
+# Delete schemas (will prompt for confirmation)
+./database/dbutil.sh delete orca        # Delete Orca schema
+./database/dbutil.sh delete all --yes   # Delete all schemas without confirmation
+
+# Options
+./database/dbutil.sh create orca --verbose         # Show SQL statements
+./database/dbutil.sh delete raydium --database-url "postgres://..." # Custom connection
+```
+
+For Docker environments, use `dbutil_docker.sh` with the same arguments.
+
+### Pool Loading (load_pools)
+
+The pool loading utility (`load_pools`) populates the database with pool data from different DEXes. It reads pool addresses from `subscribed_pools.txt` files located in each DEX's schema directory:
+
+- `schema/orca/subscribed_pools.txt`: Contains Orca pool addresses to load
+- `schema/raydium/subscribed_pools.txt`: Contains Raydium pool addresses to load
+
+Each `subscribed_pools.txt` file should contain one pool address per line, with comments starting with `#`:
+
+```
+# Example subscribed_pools.txt
+# SOL-USDC Pool
+Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE
+
+# Another pool
+C9U2Ksk6KKWvLEeo5yUQ7Xu46X7NzeBJtd9PBfuXaUSM
+```
+
+To load pools:
+
+```bash
+# Load pools
+./database/load_pools.sh all        # Load pools from all DEXes
+./database/load_pools.sh orca       # Load only Orca pools
+./database/load_pools.sh raydium    # Load only Raydium pools
+
+# Options
+./database/load_pools.sh orca --verbose  # Show detailed processing
+```
+
+For Docker environments, use `load_pools_docker.sh` with the same arguments. The Docker version also includes additional checks to avoid reloading pools that are already in the database.
+
+## Prerequisites
 
 - Rust toolchain installed
-- PostgreSQL database credentials
+- PostgreSQL database
 - Environment configuration (`.env` file or environment variables)
 
-### Configuration
+## Configuration
 
-Configuration is loaded from the following sources, in order of precedence:
+Required environment variables:
 
-1. Command-line arguments
-2. Environment variables
-3. `.env` file (if present)
-
-Required configuration:
-
-- `DATABASE_URL`: PostgreSQL connection string (e.g., `postgres://user:password@localhost:5432/dbname`)
-  - Note: The database schema "apestrong" will be created automatically if it doesn't exist
+- `DATABASE_URL`: PostgreSQL connection string
+- `SOLANA_RPC_URL`: Solana RPC endpoint for fetching blockchain data
 
 Optional configuration:
 
 - `DATABASE_MAX_CONNECTIONS`: Maximum number of database connections (default: 5)
-- `DATABASE_CONNECT_TIMEOUT`: Connection timeout in seconds (default: 30)
 
-### Usage
-
-#### Using the Shell Script (Recommended)
-
-```bash
-# Run with default settings (uses .env file)
-./database/setup_db.sh
-
-# Run with verbose output
-./database/setup_db.sh --verbose
-
-# Use a custom schema file
-./database/setup_db.sh --schema-file path/to/custom-schema.sql
-
-# Override database URL
-./database/setup_db.sh --database-url postgres://user:password@host:port/dbname
-
-# Use a specific schema (instead of public)
-./database/setup_db.sh --schema myschema
-
-# Drop existing tables and recreate them (CAUTION: DESTROYS DATA)
-./database/setup_db.sh --drop-existing
-```
-
-#### Using Cargo Directly
-
-```bash
-# Run with default settings
-cargo run --bin setup_db
-
-# Run with verbose output
-cargo run --bin setup_db -- --verbose
-
-# Use a custom schema file
-cargo run --bin setup_db -- --schema-file path/to/custom-schema.sql
-
-# Override database URL
-cargo run --bin setup_db -- --database-url postgres://user:password@host:port/dbname
-
-# Use a specific schema
-cargo run --bin setup_db -- --schema myschema
-
-# Drop existing tables and recreate them (CAUTION: DESTROYS DATA)
-cargo run --bin setup_db -- --drop-existing
-```
-
-### Example `.env` File
-
-Create a `.env` file in the project root with the following content:
+## Example `.env` File
 
 ```
 # Database connection
 DATABASE_URL=postgres://username:password@localhost:5432/indexer
-DATABASE_MAX_CONNECTIONS=5
-DATABASE_CONNECT_TIMEOUT=30
 
 # Solana RPC settings
 SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
 SOLANA_WS_URL=wss://api.mainnet-beta.solana.com
-
-# Indexer settings (optional)
-# DEFAULT_ORCA_POOL=Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE
 ```
+
+## Technical Details
+
+### Modular Design
+
+The database utilities follow a modular, extensible design:
+
+1. **Schema Structure**:
+
+   - Common tables (like `token_metadata`) are in the common schema
+   - DEX-specific tables are in their respective schemas
+   - Each DEX's schema can be created/deleted independently
+
+2. **Code Architecture**:
+
+   - `dbutil` handles schema operations with proper dependency ordering
+   - `load_pools` uses traits and dynamic dispatch for DEX-specific processing
+   - Token caching reduces redundant database operations
+
+3. **Docker Integration**:
+   - All utilities have Docker-optimized versions
+   - Automatic pool counting and comparison to avoid redundant work
+
+### Adding a New DEX
+
+To add support for a new DEX:
+
+1. Create schema files in `schema/<dex_name>/`
+2. Create a processor implementation in `models/<dex_name>.rs`
+3. Update the DEX type enums in `dbutil.rs` and `load_pools.rs`
 
 ## Troubleshooting
 
@@ -117,145 +157,25 @@ SOLANA_WS_URL=wss://api.mainnet-beta.solana.com
 
 1. **Tables Not Created**:
 
-   If the script runs successfully but tables aren't created, try:
-
-   - Run with `--verbose` to see exactly what SQL is being executed
-   - Check if you need to specify a schema with `--schema yourschema`
-   - Try running with `--drop-existing` if tables might exist but have issues
-   - Check PostgreSQL logs for any errors not shown in the output
+   - Run with `--verbose` to see SQL execution details
+   - Check PostgreSQL logs for errors
+   - Ensure the DEX name is correct (e.g., "orca", not "Orca")
 
 2. **Connection Error**:
 
-   ```
-   Error: Failed to connect to database
-   ```
-
-   Ensure your PostgreSQL server is running and the connection string is correct:
-
-   - Check if the host and port are correct
-   - Verify username and password
-   - Make sure the database exists (may need to create it first)
-   - Check if network access is allowed (pg_hba.conf settings)
+   - Verify the `DATABASE_URL` is correct
+   - Check if PostgreSQL is running
+   - Ensure network access is allowed
 
 3. **Permission Error**:
-
-   ```
-   Error: permission denied for database "indexer"
-   ```
-
-   Ensure your database user has the necessary permissions:
-
-   - User needs CREATE permission on the database
-   - For using schemas, user needs CREATE permission on the schema
-   - For dropping tables, user needs DROP permission
-
-4. **Schema File Not Found**:
-
-   ```
-   Error: Failed to read schema file: database/schema.sql
-   ```
-
-   Make sure you're running the command from the project root directory.
-
-5. **SQL Syntax Error**:
-
-   ```
-   SQL Error: syntax error at or near...
-   ```
-
-   Check the schema.sql file for syntax errors. The utility outputs the exact SQL statement causing the error when run with `--verbose`.
-
-### Validating Success
-
-To verify that the tables were created successfully, you can:
-
-1. Connect to your database and list tables:
-
-   ```sql
-   \dt apestrong.*
-   ```
-
-2. Check the indexer log output, which should show:
-
-   ```
-   Successfully applied database schema!
-   Created tables: apestrong.orca_whirlpool_events, apestrong.orca_traded_events, ...
-   ```
-
-3. Try running a simple query:
-   ```sql
-   SELECT COUNT(*) FROM apestrong.orca_whirlpool_events;
-   ```
+   - Ensure your database user has CREATE permission
+   - For schema operations, verify permissions on the schema
 
 ### Getting Help
 
-Run the setup utility with the `--help` flag for a list of available options:
+Run any utility with the `--help` flag for usage information:
 
 ```bash
-./database/setup_db.sh --help
+./database/dbutil.sh --help
+./database/load_pools.sh --help
 ```
-
-## Technical Details
-
-### Database Schema Management
-
-The setup utility handles the creation of the database schema by:
-
-1. Reading the SQL file and splitting it into individual statements
-2. Creating the schema if specified and it doesn't exist
-3. Executing each SQL statement individually
-4. Verifying that all tables were created
-5. Reporting success or detailed error information
-
-### SQL Statement Splitting
-
-The utility intelligently parses the SQL file to handle:
-
-- Multiple statements separated by semicolons
-- Comments (both single-line and block comments)
-- String literals containing semicolons
-- Complex statements with nested syntax
-
-This allows complex schema files to be properly executed.
-
-## Schema Migrations
-
-Currently, the setup utility applies the full schema in `schema.sql`. For future versions, a more comprehensive migration system will be implemented.
-
-## Advanced Usage
-
-### Integration with Docker
-
-When using Docker, you can pass the database URL as an environment variable:
-
-```bash
-docker run -e DATABASE_URL=postgres://user:password@host:port/dbname indexer setup_db
-```
-
-### CI/CD Integration
-
-For continuous integration environments, use the `--database-url` flag to provide credentials securely:
-
-```bash
-./database/setup_db.sh --database-url "$DATABASE_URL" --verbose
-```
-
-## Usage in the Indexer
-
-The database is used by the indexer to:
-
-1. Store event data from Orca Whirlpool pools
-2. Track the last processed transaction signature for each pool
-3. Maintain a list of pools to monitor
-
-The indexer connects to the database using the connection details provided in the environment variables. The `db` module in the indexer code handles database connections and provides repositories for interacting with different tables.
-
-### Repository Pattern Implementation
-
-The indexer uses the repository pattern for database access:
-
-- `OrcaWhirlpoolRepository`: Handles insertion and retrieval of Orca events
-- `OrcaWhirlpoolPoolRepository`: Manages the pool registry
-- `SignatureStore`: Tracks the last processed signatures
-
-This structured approach allows the indexer to be extended with support for additional DEXs by adding new repository implementations without changing the existing code.

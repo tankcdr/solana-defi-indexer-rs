@@ -9,8 +9,8 @@ name = "indexer"
 path = "src/main.rs"
 
 [[bin]]
-name = "setup_db"
-path = "database/setup_db.rs"
+name = "dbutil"
+path = "database/dbutil.rs"
 
 [[bin]]
 name = "load_pools"

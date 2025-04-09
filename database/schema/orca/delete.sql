@@ -6,6 +6,6 @@ DROP TABLE IF EXISTS apestrong.orca_traded_events;
 DROP TABLE IF EXISTS apestrong.orca_liquidity_increased_events;
 DROP TABLE IF EXISTS apestrong.orca_liquidity_decreased_events;
 DROP TABLE IF EXISTS apestrong.orca_whirlpool_events;
-DROP TABLE IF EXISTS apestrong.last_signatures;
+
 
 
