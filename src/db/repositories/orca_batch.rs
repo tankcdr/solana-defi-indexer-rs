@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use anyhow::{ Context, Result };
 use sqlx::{ Postgres, Transaction, Row as _ };
 
@@ -13,29 +15,29 @@ use crate::db::common::Repository;
 /// Extension trait to add batch operations to OrcaWhirlpoolRepository
 pub trait OrcaWhirlpoolBatchRepository {
     /// Insert multiple traded events in a single transaction
-    async fn batch_insert_traded_events(
+    fn batch_insert_traded_events(
         &self,
         events: Vec<OrcaWhirlpoolTradedEventRecord>
-    ) -> Result<Vec<i32>>;
+    ) -> impl Future<Output = Result<Vec<i32>>> + Send;
 
     /// Insert multiple liquidity increased events in a single transaction
-    async fn batch_insert_liquidity_increased_events(
+    fn batch_insert_liquidity_increased_events(
         &self,
         events: Vec<OrcaWhirlpoolLiquidityIncreasedEventRecord>
-    ) -> Result<Vec<i32>>;
+    ) -> impl Future<Output = Result<Vec<i32>>> + Send;
 
     /// Insert multiple liquidity decreased events in a single transaction
-    async fn batch_insert_liquidity_decreased_events(
+    fn batch_insert_liquidity_decreased_events(
         &self,
         events: Vec<OrcaWhirlpoolLiquidityDecreasedEventRecord>
-    ) -> Result<Vec<i32>>;
+    ) -> impl Future<Output = Result<Vec<i32>>> + Send;
 
     /// Insert multiple base events in a single transaction
-    async fn batch_insert_base_events<'a>(
+    fn batch_insert_base_events<'a>(
         &self,
         tx: &mut Transaction<'a, Postgres>,
         events: &[OrcaWhirlpoolEvent]
-    ) -> Result<Vec<i32>>;
+    ) -> impl Future<Output = Result<Vec<i32>>> + Send;
 }
 
 impl OrcaWhirlpoolBatchRepository for OrcaWhirlpoolRepository {

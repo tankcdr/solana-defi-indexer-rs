@@ -13,8 +13,8 @@ name = "setup_db"
 path = "database/setup_db.rs"
 
 [[bin]]
-name = "load_orca_pool"
-path = "database/load_orca_pool.rs"
+name = "load_pools"
+path = "database/load_pools.rs"
 
 [lib]
 name = "indexer"

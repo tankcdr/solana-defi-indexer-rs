@@ -1,0 +1,6 @@
+# Raydium Pools to Load
+# Format: One pool address per line. Lines starting with # are comments.
+
+# Add your Raydium pool addresses below
+# Example:
+# 58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2
