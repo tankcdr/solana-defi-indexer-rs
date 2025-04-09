@@ -1,29 +1,4 @@
--- schema
-CREATE SCHEMA IF NOT EXISTS  apestrong;
-
--- Keeps track of last seen event signature for each pool
--- This is used to avoid reprocessing events that have already been processed
-CREATE TABLE IF NOT EXISTS apestrong.last_signatures (
-    pool_address TEXT PRIMARY KEY,
-    signature TEXT NOT NULL,
-    dex_type TEXT NOT NULL,
-    last_updated TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-);
-
--- Registered Orca Whirlpool pools that we are interested in monitoring
-CREATE TABLE IF NOT EXISTS apestrong.orca_whirlpool_pools (
-    whirlpool VARCHAR(44) PRIMARY KEY,
-    pool_name VARCHAR(128),  
-    token_a_mint VARCHAR(44) NOT NULL,
-    token_b_mint VARCHAR(44) NOT NULL,
-    token_a_name VARCHAR(20),
-    token_b_name VARCHAR(20), 
-    token_a_symbol VARCHAR(10), 
-    token_b_symbol VARCHAR(10), 
-    token_a_dec INT NOT NULL,
-    token_b_dec INT NOT NULL,
-    last_updated TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-);
+-- orca schema
 
 -- Base table for common fields
 CREATE TABLE IF NOT EXISTS apestrong.orca_whirlpool_events (
