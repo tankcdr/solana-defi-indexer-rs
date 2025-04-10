@@ -54,31 +54,31 @@ Options:
 ### Run the Orca indexer with default settings
 
 ```bash
-cargo run -- orca
+cargo run --bin indexer orca
 ```
 
 ### Run the Orca indexer with a custom pool
 
 ```bash
-cargo run -- orca --pools Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE
+cargo run --bin indexer orca --pools Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE
 ```
 
 ### Run the Orca indexer with custom RPC and WebSocket URLs
 
 ```bash
-cargo run -- --rpc-url https://solana-api.projectserum.com --ws-url wss://solana-api.projectserum.com orca
+cargo run --bin indexer --rpc-url https://solana-api.projectserum.com --ws-url wss://solana-api.projectserum.com orca
 ```
 
 ### Run the Orca indexer with multiple pools
 
 ```bash
-cargo run -- orca --pools Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE,7qbRF6YsyGuLUVs6Y1q64bdVrfe4ZcUUz1JRdoVNUJnm
+cargo run --bin indexer orca --pools Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE,7qbRF6YsyGuLUVs6Y1q64bdVrfe4ZcUUz1JRdoVNUJnm
 ```
 
 ### Run the Raydium indexer with custom pools
 
 ```bash
-cargo run -- raydium --pools RaydiumPoolAddress1,RaydiumPoolAddress2
+cargo run --bin indexer raydium --pools RaydiumPoolAddress1,RaydiumPoolAddress2
 ```
 
 ### Run with Docker
@@ -111,13 +111,6 @@ The indexer uses configuration from multiple sources in this priority order:
 For example, if you set `SOLANA_RPC_URL` in your .env file but also use `--rpc-url` on the command line, the command-line value will be used.
 
 ## Protected Files System
-
-The indexer codebase includes a protection mechanism for critical files:
-
-1. **Protected File Headers**: Core implementation files include warning headers.
-2. **Configuration File**: A `.nooverwrite.json` file at the project root lists protected files.
-
-### Protected Files System
 
 The indexer codebase includes a protection mechanism for critical files:
 
@@ -176,15 +169,21 @@ For more details, see the [Database Utilities Documentation](../database/README.
 
 To add support for a new DEX indexer:
 
-1. Follow the instructions in [Adding a New DEX](./add-new-dex.md)
+1. Implement the `DexIndexer` trait in a new file `src/indexers/<dex_name>.rs`
 2. Create the necessary database schema in `database/schema/<dex_name>/`
-3. Update `main.rs` to add a new subcommand for the indexer
-4. Add command-line argument processing for the new indexer's options
+3. Define model structures in `src/models/<dex_name>/`
+4. Implement a repository in `src/db/repositories/<dex_name>.rs`
+5. Update `main.rs` to add a new subcommand for the indexer
+6. Add command-line argument processing for the new indexer's options
+
+The `DexIndexer` trait provides default implementations for common operations like WebSocket management, backfilling, and error handling. You only need to implement the protocol-specific methods for event parsing and database operations.
+
+For detailed step-by-step instructions with code examples, see [Adding a New DEX](./add-new-dex.md).
 
 After implementing a new indexer, users can run it with:
 
 ```bash
-cargo run -- new-dex-name [options]
+cargo run --bin indexer new-dex-name [options]
 ```
 
-The command-line structure is designed to easily accommodate adding new indexers in the future.
+The command-line structure is designed to easily accommodate adding new indexers in the future, and the `DexIndexer` trait ensures consistency across all implementations.

@@ -138,8 +138,17 @@ The database utilities follow a modular, extensible design:
    - `dbutil` handles schema operations with proper dependency ordering
    - `load_pools` uses traits and dynamic dispatch for DEX-specific processing
    - Token caching reduces redundant database operations
+   - The `Repository` trait provides standardized database access for all DEXes
+   - The `DexIndexer` trait uses repositories via the trait system for consistent access
 
-3. **Docker Integration**:
+3. **Trait-Based Integration**:
+
+   - The `Repository` trait defines a consistent interface for database operations
+   - Each DEX implements its own repository that conforms to this interface
+   - The `DexIndexer` trait accesses repositories through this abstraction
+   - This design allows new DEXes to be added with minimal changes to core components
+
+4. **Docker Integration**:
    - All utilities have Docker-optimized versions
    - Automatic pool counting and comparison to avoid redundant work
 
@@ -149,7 +158,15 @@ To add support for a new DEX:
 
 1. Create schema files in `schema/<dex_name>/`
 2. Create a processor implementation in `models/<dex_name>.rs`
-3. Update the DEX type enums in `dbutil.rs` and `load_pools.rs`
+3. Create a repository that implements the `Repository` trait in `src/db/repositories/<dex_name>.rs`
+4. Create an indexer that implements the `DexIndexer` trait in `src/indexers/<dex_name>.rs`
+5. Update the DEX type enums in `dbutil.rs` and `load_pools.rs`
+
+The integration with the `DexIndexer` trait streamlines this process by:
+
+- Providing default implementations for common operations
+- Standardizing how repositories are accessed
+- Ensuring consistent error handling and logging
 
 ## Troubleshooting
 

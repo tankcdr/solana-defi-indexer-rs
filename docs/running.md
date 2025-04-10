@@ -26,7 +26,7 @@ DEX_TYPE=raydium docker compose up -d
 After completing the [setup process](./setup.md), you can run the indexer directly with:
 
 ```bash
-cargo run -- [global options] <command> [command options]
+cargo run --bin indexer [global options] <command> [command options]
 ```
 
 Where:
@@ -48,7 +48,7 @@ Run the Orca indexer with default settings (monitors the SOL/USDC pool):
 DEX_TYPE=orca docker compose up -d
 
 # Command line
-cargo run -- orca
+cargo run --bin indexer orca
 ```
 
 #### Raydium Indexer
@@ -60,7 +60,7 @@ Run the Raydium indexer with default settings:
 DEX_TYPE=raydium docker compose up -d
 
 # Command line
-cargo run -- raydium
+cargo run --bin indexer raydium
 ```
 
 ### Specifying Custom Pools
@@ -69,7 +69,7 @@ To monitor a specific Orca Whirlpool pool:
 
 ```bash
 # Command line
-cargo run -- orca --pools Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE
+cargo run --bin indexer orca --pools Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE
 ```
 
 ### Multiple Pools
@@ -78,7 +78,7 @@ To monitor multiple pools at once:
 
 ```bash
 # Command line
-cargo run -- orca --pools Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE,7qbRF6YsyGuLUVs6Y1q64bdVrfe4ZcUUz1JRdoVNUJnm
+cargo run --bin indexer orca --pools Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE,7qbRF6YsyGuLUVs6Y1q64bdVrfe4ZcUUz1JRdoVNUJnm
 ```
 
 ### Using Custom RPC Endpoints
@@ -87,7 +87,7 @@ To use specific RPC and WebSocket endpoints:
 
 ```bash
 # Command line
-cargo run -- --rpc-url https://your-rpc-provider.com --ws-url wss://your-rpc-provider.com orca
+cargo run --bin indexer --rpc-url https://your-rpc-provider.com --ws-url wss://your-rpc-provider.com orca
 ```
 
 When using Docker, you can set these in the environment:

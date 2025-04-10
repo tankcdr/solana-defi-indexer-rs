@@ -4,7 +4,15 @@ This document describes the architecture of the DEX Event Indexer, explaining it
 
 ## Overview
 
-The DEX Event Indexer follows a modular, protocol-oriented architecture that provides a clear separation of concerns and makes it easy to add support for new DEXs.
+The DEX Event Indexer follows a modular, protocol-oriented architecture built around the `DexIndexer` trait. This design provides a clear separation of concerns and standardizes how new DEXs can be integrated, making the system highly extensible.
+
+The `DexIndexer` trait serves as the core abstraction that all DEX-specific implementations follow, providing:
+
+- A standardized interface for event processing
+- Default implementations for common operations
+- Protocol-specific hooks for customizing behavior
+- Robust error handling and recovery strategies
+- Consistent logging and monitoring capabilities
 
 ## Directory Structure
 
@@ -31,6 +39,7 @@ indexer/
 │   │       └── raydium.rs       # Raydium database operations
 │   ├── indexers/                # Event processing logic
 │   │   ├── mod.rs               # Indexer exports
+│   │   ├── dex_indexer.rs       # Core DexIndexer trait
 │   │   ├── orca.rs              # Orca event handling
 │   │   └── raydium.rs           # Raydium event handling
 │   ├── websocket_manager.rs     # WebSocket connection management
@@ -111,16 +120,28 @@ All database tables are created under the 'apestrong' schema to keep them organi
 
 ### Indexers
 
-The `indexers` directory contains the event processing logic for each protocol:
+The `indexers` directory contains the core `DexIndexer` trait and protocol-specific implementations:
 
-- `indexers/orca.rs`: Handles Orca Whirlpool event indexing by:
-  - Subscribing to Solana transaction logs via WebSocket
-  - Parsing event data using Borsh deserialization
-  - Filtering events by monitored pool addresses
-  - Storing events in the database via the repository
-  - Backfilling historical events for complete data
-- `indexers/raydium.rs`: Handles Raydium event indexing with a similar approach
+- `indexers/dex_indexer.rs`: Defines the `DexIndexer` trait with:
 
+  - Required methods that each DEX implementation must provide
+  - Default implementations for common operations like log processing and backfilling
+  - Event buffering during backfill operations
+  - Error handling with recovery strategies
+  - Structured logging for monitoring and diagnostics
+  - WebSocket subscription management
+  - Transaction signature tracking
+
+- `indexers/orca.rs`: Implements the `DexIndexer` trait for Orca Whirlpool by:
+
+  - Defining Orca-specific event parsing logic
+  - Processing swap and liquidity events
+  - Converting on-chain events to database records
+  - Handling Orca-specific event discriminators
+
+- `indexers/raydium.rs`: Implements the `DexIndexer` trait for Raydium with similar protocol-specific logic
+
+This architecture allows each protocol to focus on its unique aspects while inheriting common functionality from the `DexIndexer` trait, promoting code reuse and consistency across implementations.
 The separation allows each indexer to handle the unique aspects of its protocol while sharing common patterns for WebSocket management and backfilling.
 
 ### Additional Components
@@ -167,27 +188,38 @@ The project includes Docker support for containerized deployment:
 
 ## Protocol Abstraction
 
-Each DEX protocol is treated as a self-contained module with its own:
+The system follows a trait-based architecture where each DEX protocol implements the `DexIndexer` trait, providing:
 
-1. **Data Models**: Defining the structure of its events
-2. **Repository**: Managing its database operations
-3. **Indexer**: Processing its events
+1. **Data Models**: Defining the structure of its events (required)
+2. **Repository**: Managing its database operations (required)
+3. **ParsedEvent Type**: A protocol-specific event representation (required)
+4. **Event Parsing Logic**: Custom parsing for protocol-specific events (required)
+5. **Event Handling Logic**: Protocol-specific database operations (required)
 
-This allows each protocol to be implemented independently without affecting others.
+The `DexIndexer` trait then provides default implementations for:
+
+1. **WebSocket Management**: Setting up and maintaining connections
+2. **Backfilling**: Historical event recovery
+3. **Event Buffering**: Queueing events during backfill operations
+4. **Error Handling**: Standardized recovery strategies
+5. **Logging**: Consistent formatting and level-based filtering
+
+This architecture combines the benefits of inheritance (via traits) with protocol-specific customization, allowing each protocol to be implemented independently while maintaining a consistent interface.
 
 ## Adding New Protocols
 
-When adding a new DEX, each component is added in isolation:
+When adding a new DEX, you follow this standardized process:
 
 1. Add protocol-specific models in `models/[protocol]/`
 2. Create database schema files in `database/schema/[protocol]/`
 3. Implement a repository in `db/repositories/[protocol].rs`
-4. Create an indexer in `indexers/[protocol].rs`
+4. Create an indexer in `indexers/[protocol].rs` that implements the `DexIndexer` trait
 5. Add a new command in `main.rs` to enable the new indexer
 6. Update the Docker files if deploying with containers
 
-This modular approach allows for consistent extension without disrupting existing functionality. For detailed instructions, see [Adding a New DEX](./add-new-dex.md).
-For detailed instructions, see [Adding a New DEX](./add-new-dex.md).
+The `DexIndexer` trait significantly simplifies this process by providing default implementations for complex operations like WebSocket management, backfilling, and error handling. The developer only needs to implement protocol-specific methods for event parsing and database operations.
+
+For detailed step-by-step instructions with code examples, see [Adding a New DEX](./add-new-dex.md).
 
 ## Design Decisions
 
@@ -228,11 +260,13 @@ The application can also be deployed using Docker:
 
 ### Async Processing
 
-The indexer uses Tokio for asynchronous processing, allowing it to:
+The indexer uses Tokio for asynchronous processing with the `async_trait` macro enabling async methods in the `DexIndexer` trait. This approach allows the system to:
 
 - Handle high volumes of transactions efficiently
 - Process blockchain events and database operations concurrently
 - Maintain WebSocket connections while performing other tasks
+- Buffer events during backfilling to prevent data loss
+- Implement timeouts and retries for resilience
 
 ### Database Organization
 

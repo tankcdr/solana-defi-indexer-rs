@@ -9,8 +9,15 @@ Adding a new DEX involves several steps:
 1. Create database tables for the new DEX's events
 2. Define model structures for the on-chain events
 3. Implement a repository for database operations
-4. Build an indexer for processing the DEX's events
+4. Build an indexer that implements the `DexIndexer` trait
 5. Update the main application with a new CLI command
+
+The core of our architecture is the `DexIndexer` trait, which provides:
+
+- A standardized interface for all DEX implementations
+- Default implementations for common operations (processing logs, backfilling, etc.)
+- Protocol-specific hooks for customizing event parsing and handling
+- Robust error handling and recovery strategies
 
 Let's go through each step in detail using a hypothetical "Raydium" DEX as an example.
 
@@ -375,37 +382,21 @@ pub use orca::*;
 pub use raydium::*;  // Add this line
 ```
 
-## 4. Create an Indexer
+## 4. Create an Indexer that Implements the DexIndexer Trait
 
-Create an indexer in `src/indexers/raydium.rs`:
+Create an indexer in `src/indexers/raydium.rs` that implements the `DexIndexer` trait:
 
 ```rust
-/******************************************************************************
- * IMPORTANT: DO NOT MODIFY THIS FILE WITHOUT EXPLICIT APPROVAL
- *
- * This file is protected and should not be modified without explicit approval.
- * Any changes could break the indexer functionality.
- *
- * See .nooverwrite.json for more information on protected files.
- ******************************************************************************/
-
 use anyhow::{Context, Result};
-use futures::stream::StreamExt;
-use solana_client::{
-    nonblocking::{pubsub_client::PubsubClient, rpc_client::RpcClient},
-    rpc_config::{RpcTransactionConfig, RpcTransactionLogsConfig, RpcTransactionLogsFilter},
-    rpc_client::GetConfirmedSignaturesForAddress2Config,
-    rpc_response::RpcLogsResponse,
-};
-use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature};
-use solana_transaction_status::UiTransactionEncoding;
+use solana_client::rpc_response::RpcLogsResponse;
+use solana_sdk::pubkey::Pubkey;
 use std::collections::HashSet;
 use std::str::FromStr;
-use std::sync::{Arc, RwLock};
-use base64::engine::general_purpose;
-use base64::Engine as _;
+use sqlx::PgPool;
+use async_trait::async_trait;
 
 use crate::db::repositories::RaydiumRepository;
+use crate::indexers::dex_indexer::DexIndexer;
 use crate::models::raydium::concentrated::{
     SWAP_EVENT_DISCRIMINATOR,
     RaydiumEventType,
@@ -415,80 +406,174 @@ use crate::models::raydium::concentrated::{
     RaydiumSwapEventRecord,
 };
 
-/// Raydium concentrated liquidity indexer
+// Default Raydium pool
+const DEFAULT_RAYDIUM_POOL: &str = "RaydiumPoolAddressHere";
+const DEX: &str = "raydium";
+
+/// Represents a parsed event from Raydium logs
+#[derive(Debug)]
+pub enum RaydiumParsedEvent {
+    Swap(RaydiumSwapEvent, String), // Event and signature
+    // Add more event types as needed
+}
+
+/// Raydium indexer
 pub struct RaydiumIndexer {
     repository: RaydiumRepository,
+    pool_pubkeys: HashSet<Pubkey>,
 }
 
 impl RaydiumIndexer {
-    /// Create a new indexer with the given repository
-    pub fn new(repository: RaydiumRepository) -> Self {
-        Self { repository }
+    /// Create a new indexer with the given repository and pool set
+    pub fn new(repository: RaydiumRepository, pool_pubkeys: HashSet<Pubkey>) -> Self {
+        Self { repository, pool_pubkeys }
     }
 
-    /// Start indexing events for the given pools
-    pub async fn start(&self, rpc_url: &str, ws_url: &str, pools: &[Pubkey]) -> Result<()> {
-        // Create a shared pool set for filtering events
-        let active_pools: Arc<RwLock<HashSet<Pubkey>>> = Arc::new(RwLock::new(HashSet::new()));
-        {
-            let mut pool_set = active_pools.write().unwrap();
-            for pool in pools {
-                pool_set.insert(*pool);
-            }
-        }
-
-        // Initialize RPC client for backfilling
-        let rpc_client = RpcClient::new_with_commitment(
-            rpc_url.to_string(),
-            CommitmentConfig::confirmed()
+    /// Create an indexer instance with a freshly initialized repository and default pool
+    pub fn create(db_pool: PgPool) -> Result<Self> {
+        // Create a singleton pool set with the default pool
+        let mut pool_pubkeys = HashSet::new();
+        pool_pubkeys.insert(
+            Pubkey::from_str(DEFAULT_RAYDIUM_POOL).context(
+                "Failed to parse default Raydium pool address"
+            )?
         );
 
-        // Backfill recent events
-        for pool in pools {
-            println!("Backfilling data for pool {}", pool);
-            self.backfill_pool(&rpc_client, pool).await?;
-        }
+        let repository = RaydiumRepository::new(db_pool);
+        Ok(Self::new(repository, pool_pubkeys))
+    }
 
-        // Start live event subscription
-        let pubsub_client = PubsubClient::new(ws_url).await?;
+    /// Create an indexer and resolve pool addresses in one operation
+    pub async fn create_with_pools(
+        db_pool: PgPool,
+        provided_pools: Option<&Vec<String>>
+    ) -> Result<Self> {
+        // Create the repository for database access
+        let repository = RaydiumRepository::new(db_pool.clone());
 
-        println!("Starting live event subscription...");
-        let (mut log_stream, _) = pubsub_client.logs_subscribe(
-            RpcTransactionLogsFilter::All,
-            RpcTransactionLogsConfig {
-                commitment: Some(CommitmentConfig::confirmed()),
-            }
+        // Resolve pool addresses
+        let pool_pubkeys = repository.get_pools_with_fallback(
+            provided_pools,
+            DEFAULT_RAYDIUM_POOL
         ).await?;
 
-        println!("Monitoring Raydium logs for {} pools...", pools.len());
-        while let Some(response) = log_stream.next().await {
-            self.process_log(&response.value, &active_pools).await?;
+        if provided_pools.is_some() && !provided_pools.unwrap().is_empty() {
+            crate::utils::logging::log_activity(
+                DEX,
+                "Pool source",
+                Some("from command line arguments")
+            );
+        } else if pool_pubkeys.len() > 1 {
+            crate::utils::logging::log_activity(DEX, "Pool source", Some("from database"));
+        } else {
+            crate::utils::logging::log_activity(
+                DEX,
+                "Pool source",
+                Some("using default pool (no pools in CLI or database)")
+            );
+        }
+
+        Ok(Self::new(repository, pool_pubkeys))
+    }
+
+    /// Create a base event record
+    fn create_base_event(
+        &self,
+        signature: &str,
+        pool: &Pubkey,
+        event_type: RaydiumEventType
+    ) -> RaydiumConcentratedEvent {
+        RaydiumConcentratedEvent {
+            id: 0, // Will be set by database
+            signature: signature.to_string(),
+            pool: pool.to_string(),
+            event_type: event_type.to_string(),
+            version: 1,
+            timestamp: chrono::Utc::now(),
+        }
+    }
+}
+#[async_trait::async_trait]
+impl DexIndexer for RaydiumIndexer {
+type Repository = RaydiumRepository;
+type ParsedEvent = RaydiumParsedEvent;
+
+fn program_ids(&self) -> Vec<&str> {
+    vec!["675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"] // Raydium program ID
+}
+
+fn pool_pubkeys(&self) -> &HashSet<Pubkey> {
+    &self.pool_pubkeys
+}
+
+fn repository(&self) -> &Self::Repository {
+    &self.repository
+}
+
+fn dex_name(&self) -> &str {
+    DEX
+}
+
+/// Parse events from a log, returning any found events without persisting them
+async fn parse_log_events(&self, log: &RpcLogsResponse) -> Result<Vec<Self::ParsedEvent>> {
+    // Quick initial check for relevant event keywords
+    let contains_relevant_events = log.logs
+        .iter()
+        .any(|line| {
+            line.contains("Swap") ||
+                line.contains("CreatePosition") ||
+                line.contains("ClosePosition")
+        });
+
+    if !contains_relevant_events {
+        return Ok(Vec::new());
+    }
+
+    let mut events = Vec::new();
+
+    // Extract and process events
+    // Implementation similar to OrcaWhirlpoolIndexer
+    // Process Raydium events based on their discriminators
+
+    // This is a simplified example - you would add actual event parsing logic here
+
+    Ok(events)
+}
+    }
+
+    /// Handle a single event (for both real-time and backfill processing)
+    async fn handle_event(&self, event: Self::ParsedEvent) -> Result<()> {
+        match event {
+            RaydiumParsedEvent::Swap(event_data, signature) => {
+                // Create the base event
+                let base_event = self.create_base_event(
+                    &signature,
+                    &event_data.pool,
+                    RaydiumEventType::Swap
+                );
+
+                // Create the data record
+                let data = RaydiumSwapRecord {
+                    event_id: 0, // Will be set after base event is inserted
+                    in_token_amount: event_data.in_token_amount as i64,
+                    out_token_amount: event_data.out_token_amount as i64,
+                    fee_amount: event_data.fee_amount as i64,
+                    price: event_data.price as f64,
+                };
+
+                let event_record = RaydiumSwapEventRecord {
+                    base: base_event,
+                    data,
+                };
+
+                self.repository.insert_swap_event(event_record).await?;
+            }
+            // Add handling for other event types
         }
 
         Ok(())
     }
-
-    /// Process a log response
-    async fn process_log(
-        &self,
-        log: &RpcLogsResponse,
-        active_pools: &Arc<RwLock<HashSet<Pubkey>>>
-    ) -> Result<()> {
-        // Implementation similar to OrcaWhirlpoolIndexer
-        // Process Raydium events based on their discriminators
-
-        // This is a simplified example
-        Ok(())
-    }
-
-    /// Backfill events for a single pool
-    async fn backfill_pool(&self, rpc_client: &RpcClient, pool_pubkey: &Pubkey) -> Result<()> {
-        // Implementation similar to OrcaWhirlpoolIndexer
-        // Fetch and process historical transactions
-
-        // This is a simplified example
-        Ok(())
-    }
+}
 
     /// Extract event data from a log message
     fn extract_event_data(&self, log_message: &str) -> Option<Vec<u8>> {

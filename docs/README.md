@@ -22,7 +22,7 @@ Currently supported DEXs:
 - **Orca Whirlpool** (Concentrated Liquidity Pools) - Fully implemented
 - **Raydium** (Concentrated Liquidity Pools) - Implementation in progress
 
-The system is designed to be modular, allowing new DEXes to be added with minimal changes to the existing codebase.
+The system is designed to be modular and extensible through the `DexIndexer` trait, allowing new DEXes to be added with minimal changes to the existing codebase.
 
 ## Getting Started
 
@@ -34,22 +34,25 @@ The system is designed to be modular, allowing new DEXes to be added with minima
 
 ## Architecture
 
-The indexer follows a modular, protocol-oriented architecture:
+The indexer follows a modular, protocol-oriented architecture built around the `DexIndexer` trait:
 
 - **Models**: Define the structures for blockchain events and database tables
-  - Organized by protocol (e.g., `models/orca/whirlpool.rs`)
+  - Organized by protocol (e.g., `models/orca/whirlpool.rs`, `models/raydium/concentrated.rs`)
   - Common models shared across protocols (`models/common.rs`)
 - **DB**: Handle database connections and operations
   - Connection pool management
   - Protocol-specific repositories
   - Signature tracking to prevent duplicate processing
 - **Indexers**: Process blockchain events and store them in the database
-  - Protocol-specific indexers with shared backfilling logic
+  - Core `DexIndexer` trait with default implementations for common operations
+  - Protocol-specific indexers implementing the trait
   - WebSocket-based real-time monitoring
+  - Event buffering during backfill operations
+  - Scheduled backfilling for missed events
 
 All database tables are created under the 'apestrong' schema for organization. The schema is structured into:
 
-- **Common tables**: Shared across all DEXes (token metadata, subscribed pools)
+- **Common tables**: Shared across all DEXes (token metadata, subscribed pools, signature tracking)
 - **Protocol-specific tables**: Each DEX has its own set of tables for events
 - **Views**: For convenient querying of complex data relationships
 
@@ -102,14 +105,20 @@ See the [CLI Usage Guide](./cli-usage.md) and [Docker Setup](./docker-setup.md) 
 
 ## Adding New DEXs
 
-We've designed the system to be easily extendable with new DEXs:
+We've designed the system to be easily extendable with new DEXs through the `DexIndexer` trait:
 
 1. Create database schema files in `database/schema/<dex_name>/`
 2. Create model structures in `src/models/<dex_name>/`
 3. Implement a repository in `src/db/repositories/<dex_name>.rs`
-4. Create an indexer in `src/indexers/<dex_name>.rs`
+4. Create an indexer in `src/indexers/<dex_name>.rs` that implements the `DexIndexer` trait
 5. Update the main application to support the new DEX
 
-For complete step-by-step instructions, see [How to Add a New DEX](./add-new-dex.md).
+The `DexIndexer` trait provides:
 
-- [How to Add a New DEX](./add-new-dex.md)
+- A standardized interface for all DEX implementations
+- Default implementations for common operations (log processing, backfilling, etc.)
+- Protocol-specific hooks for customizing event parsing and handling
+- Robust error handling and recovery strategies
+- Event buffering during backfill operations
+
+For complete step-by-step instructions with code examples, see [How to Add a New DEX](./add-new-dex.md).
