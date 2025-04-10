@@ -6,6 +6,7 @@ use std::str::FromStr;
 use std::sync::{ Arc, Mutex };
 
 /// Enum-based store to contain both memory and database implementations
+#[derive(Clone)]
 pub enum SignatureStore {
     InMemory(InMemorySignatureStore),
     Database(DbSignatureStore),
@@ -54,6 +55,7 @@ impl SignatureStore {
 }
 
 /// In-memory implementation of signature storage
+#[derive(Clone)]
 pub struct InMemorySignatureStore {
     // Key: (pool_pubkey, dex_type)
     signatures: Arc<Mutex<HashMap<(Pubkey, String), String>>>,
@@ -100,6 +102,7 @@ impl InMemorySignatureStore {
 }
 
 /// Database-backed implementation of signature storage
+#[derive(Clone)]
 pub struct DbSignatureStore {
     db_pool: PgPool,
 }

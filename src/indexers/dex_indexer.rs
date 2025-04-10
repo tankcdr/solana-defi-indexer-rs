@@ -4,6 +4,7 @@ use solana_client::rpc_response::RpcLogsResponse;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
+use sqlx::PgPool;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{ AtomicBool, Ordering };
@@ -16,10 +17,23 @@ use base64::engine::general_purpose;
 use base64::Engine;
 use async_trait::async_trait;
 
-use crate::backfill_manager::{ BackfillManager, BackfillConfig };
+use crate::backfill_manager::{ BackfillConfig, BackfillManager };
 use crate::db::signature_store::{ SignatureStore, SignatureStoreType };
 use crate::db::Repository;
 use crate::websocket_manager::{ WebSocketManager, WebSocketConfig };
+
+// Connection configuration for RPC and WebSocket URLs
+#[derive(Clone)]
+pub struct ConnectionConfig {
+    pub rpc_url: String,
+    pub ws_url: String,
+}
+
+impl ConnectionConfig {
+    pub fn new(rpc_url: String, ws_url: String) -> Self {
+        Self { rpc_url, ws_url }
+    }
+}
 
 /// Core trait for all DEX indexers
 #[async_trait]
@@ -29,7 +43,29 @@ pub trait DexIndexer {
     type ParsedEvent: Send;
 
     //
-    // REQUIRED METHODS (must be implemented by each DEX)
+    // REQUIRED CONSTRUCTOR METHOD (unified instantiation pattern)
+    //
+
+    /// Create a new indexer instance with the given parameters
+    ///
+    /// This method handles all instantiation logic including:
+    /// - Creating/obtaining the repository
+    /// - Resolving pool addresses from multiple sources (CLI args, DB, defaults)
+    /// - Setting up core dependencies like signature store and backfill manager
+    ///
+    /// Parameters:
+    /// - db_pool: Database connection pool
+    /// - provided_pools: Optional list of pool addresses from CLI args
+    /// - connection_config: Connection configuration including RPC and WebSocket URLs
+    async fn new(
+        db_pool: PgPool,
+        provided_pools: Option<&Vec<String>>,
+        connection_config: ConnectionConfig
+    ) -> Result<Self>
+        where Self: Sized;
+
+    //
+    // OTHER REQUIRED METHODS (must be implemented by each DEX)
     //
 
     /// Return program IDs to monitor
@@ -43,6 +79,15 @@ pub trait DexIndexer {
 
     /// Name of the DEX (for logs and config)
     fn dex_name(&self) -> &str;
+
+    /// Access to signature store
+    fn signature_store(&self) -> &SignatureStore;
+
+    /// Access to backfill manager
+    fn backfill_manager(&self) -> &BackfillManager;
+
+    /// Access to connection configuration
+    fn connection_config(&self) -> &ConnectionConfig;
 
     /// Parse events from a log, returning any found events without persisting them
     async fn parse_log_events(&self, log: &RpcLogsResponse) -> Result<Vec<Self::ParsedEvent>>;
@@ -77,35 +122,29 @@ pub trait DexIndexer {
     }
 
     /// Start the indexer
-    async fn start(&self, rpc_url: &str, ws_url: &str) -> Result<()> {
+    async fn start(&self) -> Result<()> {
+        // Modified to use pre-initialized components and config
         // Log startup information
         self.log_activity(&format!("Starting {} indexer", self.dex_name()), None);
 
         // Log all pools being monitored
         self.log_monitored_pools();
 
-        // Create signature store
-        let signature_store = self.create_signature_store()?;
-
-        // Initialize backfill manager
-        let backfill_manager = self.create_backfill_manager(rpc_url, signature_store);
-        let backfill_manager = Arc::new(backfill_manager);
-
         // Setup WebSocket manager
-        let (ws_manager, rx_buffer) = self.setup_websocket_manager(ws_url).await?;
+        let (ws_manager, rx_buffer) = self.setup_websocket_manager().await?;
 
         // Setup event buffering during backfill
         let (event_buffer, is_backfilling, buffer_task) =
             self.setup_event_buffering(rx_buffer).await;
 
         // Perform initial backfill
-        self.perform_backfill(&backfill_manager).await?;
+        self.perform_backfill().await?;
 
         // Signal backfill completion and process buffered events
         self.process_buffered_events(event_buffer, is_backfilling, buffer_task).await?;
 
         // Main event processing loop with periodic backfill
-        self.run_main_event_loop(ws_manager, backfill_manager).await
+        self.run_main_event_loop(ws_manager).await
     }
 
     //
@@ -312,11 +351,10 @@ pub trait DexIndexer {
 
     /// Setup WebSocket manager
     async fn setup_websocket_manager(
-        &self,
-        ws_url: &str
+        &self
     ) -> Result<(WebSocketManager, Receiver<RpcLogsResponse>)> {
         let ws_config = WebSocketConfig {
-            ws_url: ws_url.to_string(),
+            ws_url: self.connection_config().ws_url.clone(),
             filter: RpcTransactionLogsFilter::Mentions(
                 self
                     .program_ids()
@@ -372,7 +410,7 @@ pub trait DexIndexer {
     //
 
     /// Main backfill coordinator - orchestrates the entire backfill process
-    async fn perform_backfill(&self, backfill_manager: &Arc<BackfillManager>) -> Result<()> {
+    async fn perform_backfill(&self) -> Result<()> {
         self.log_activity("Starting initial backfill", None);
 
         // Track overall statistics
@@ -380,7 +418,7 @@ pub trait DexIndexer {
         let mut total_success = 0;
 
         for pool in self.pool_pubkeys() {
-            let result = self.backfill_pool(backfill_manager, pool).await;
+            let result = self.backfill_pool(pool).await;
 
             match result {
                 Ok((processed, success)) => {
@@ -399,13 +437,10 @@ pub trait DexIndexer {
     }
 
     /// Process backfill for a single pool
-    async fn backfill_pool(
-        &self,
-        backfill_manager: &Arc<BackfillManager>,
-        pool: &Pubkey
-    ) -> Result<(usize, usize)> {
+    async fn backfill_pool(&self, pool: &Pubkey) -> Result<(usize, usize)> {
         self.log_activity("Backfilling pool", Some(&pool.to_string()));
 
+        let backfill_manager = self.backfill_manager();
         // Get signatures for this pool
         let signatures = backfill_manager.initial_backfill_for_pool(pool).await.map_err(|e| {
             self.log_error(&format!("Failed to get signatures for pool {}", pool), &e);
@@ -422,18 +457,18 @@ pub trait DexIndexer {
         );
 
         // Process the transactions and return stats
-        self.process_backfill_signatures(backfill_manager, &signatures).await
+        self.process_backfill_signatures(&signatures).await
     }
 
     /// Process a batch of signatures during backfill
     async fn process_backfill_signatures(
         &self,
-        backfill_manager: &Arc<BackfillManager>,
         signatures: &Vec<Signature>
     ) -> Result<(usize, usize)> {
         let total = signatures.len();
         let mut success_count = 0;
         let mut event_batch = Vec::new();
+        let backfill_manager = self.backfill_manager();
 
         for sig in signatures {
             match backfill_manager.fetch_transaction(sig).await {
@@ -487,14 +522,12 @@ pub trait DexIndexer {
     }
 
     /// Handle periodic/scheduled backfill operations
-    async fn perform_scheduled_backfill(
-        &self,
-        backfill_manager: &Arc<BackfillManager>
-    ) -> Result<()> {
+    async fn perform_scheduled_backfill(&self) -> Result<()> {
         self.log_activity("Running scheduled backfill", None);
 
         let mut total_processed = 0;
         let mut total_success = 0;
+        let backfill_manager = self.backfill_manager();
 
         for pool in self.pool_pubkeys() {
             // Get signatures since last processed
@@ -514,7 +547,7 @@ pub trait DexIndexer {
             }
 
             // Process these signatures
-            match self.process_backfill_signatures(backfill_manager, &signatures).await {
+            match self.process_backfill_signatures(&signatures).await {
                 Ok((processed, success)) => {
                     total_processed += processed;
                     total_success += success;
@@ -568,11 +601,7 @@ pub trait DexIndexer {
     }
 
     /// Main event processing loop with periodic backfill
-    async fn run_main_event_loop(
-        &self,
-        ws_manager: WebSocketManager,
-        backfill_manager: Arc<BackfillManager>
-    ) -> Result<()> {
+    async fn run_main_event_loop(&self, ws_manager: WebSocketManager) -> Result<()> {
         // We need a new WebSocket subscription for the main processing loop
         self.log_activity("Starting main event processing loop", None);
         let mut rx_main = ws_manager.start_subscription().await?;
@@ -602,7 +631,7 @@ pub trait DexIndexer {
                             
                             // If it's been more than 2 minutes since our last backfill, do another one
                             if last_backfill.elapsed() > Duration::from_secs(120) {
-                                if let Err(e) = self.perform_scheduled_backfill(&backfill_manager).await {
+                                if let Err(e) = self.perform_scheduled_backfill().await {
                                     self.log_error("Error during scheduled backfill", &e);
                                 }
                                 

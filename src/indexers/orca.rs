@@ -1,12 +1,12 @@
-use anyhow::{ Context, Result };
+use anyhow::Result;
 use borsh::BorshDeserialize;
 use solana_client::rpc_response::RpcLogsResponse;
 use solana_sdk::pubkey::Pubkey;
 use std::collections::HashSet;
-use std::str::FromStr;
 use sqlx::PgPool;
 
 use crate::db::repositories::OrcaWhirlpoolRepository;
+use crate::db::DbSignatureStore;
 use crate::indexers::dex_indexer::DexIndexer;
 use crate::models::orca::whirlpool::{
     TRADED_EVENT_DISCRIMINATOR,
@@ -23,6 +23,9 @@ use crate::models::orca::whirlpool::{
     OrcaWhirlpoolLiquidityIncreasedEventRecord,
     OrcaWhirlpoolLiquidityDecreasedEventRecord,
 };
+use crate::{ BackfillConfig, BackfillManager, SignatureStore };
+
+use super::ConnectionConfig;
 
 // Default Orca pool (SOL/USDC)
 const DEFAULT_ORCA_POOL: &str = "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE";
@@ -40,69 +43,13 @@ pub enum OrcaWhirlpoolParsedEvent {
 pub struct OrcaWhirlpoolIndexer {
     repository: OrcaWhirlpoolRepository,
     pool_pubkeys: HashSet<Pubkey>,
+    signature_store: SignatureStore,
+    backfill_manager: BackfillManager,
+    connection_config: ConnectionConfig,
 }
 
 impl OrcaWhirlpoolIndexer {
-    /// Create a new indexer with the given repository and pool set
-    pub fn new(repository: OrcaWhirlpoolRepository, pool_pubkeys: HashSet<Pubkey>) -> Self {
-        Self { repository, pool_pubkeys }
-    }
-
-    /// Create an indexer instance with a freshly initialized repository and default pool
-    pub fn create(db_pool: PgPool) -> Result<Self> {
-        // Create a singleton pool set with the default pool
-        let mut pool_pubkeys = HashSet::new();
-        pool_pubkeys.insert(
-            Pubkey::from_str(DEFAULT_ORCA_POOL).context(
-                "Failed to parse default Orca pool address"
-            )?
-        );
-
-        let repository = OrcaWhirlpoolRepository::new(db_pool);
-        Ok(Self::new(repository, pool_pubkeys))
-    }
-
-    /// Create an indexer and resolve pool addresses in one operation
-    ///
-    /// This method:
-    /// 1. Creates the required repositories
-    /// 2. Resolves pool addresses based on priority (CLI > DB > Default)
-    /// 3. Logs the source of pool addresses
-    /// 4. Returns the fully configured indexer
-    pub async fn create_with_pools(
-        db_pool: PgPool,
-        provided_pools: Option<&Vec<String>>
-    ) -> Result<Self> {
-        // Create the repository for database access
-        let repository = OrcaWhirlpoolRepository::new(db_pool.clone());
-
-        // Resolve pool addresses
-        let pool_pubkeys = repository.get_pools_with_fallback(
-            provided_pools,
-            DEFAULT_ORCA_POOL
-        ).await?;
-
-        if provided_pools.is_some() && !provided_pools.unwrap().is_empty() {
-            crate::utils::logging::log_activity(
-                DEX,
-                "Pool source",
-                Some("from command line arguments")
-            );
-        } else if pool_pubkeys.len() > 1 {
-            crate::utils::logging::log_activity(DEX, "Pool source", Some("from database"));
-        } else {
-            crate::utils::logging::log_activity(
-                DEX,
-                "Pool source",
-                Some("using default pool (no pools in CLI or database)")
-            );
-        }
-
-        Ok(Self::new(repository, pool_pubkeys))
-    }
-
     // Utility methods that are not part of the trait
-
     /// Log details about a traded event
     fn log_traded_event(&self, event: &OrcaWhirlpoolTradedEvent) {
         self.log_event_processed(
@@ -168,6 +115,58 @@ impl DexIndexer for OrcaWhirlpoolIndexer {
     type Repository = OrcaWhirlpoolRepository;
     type ParsedEvent = OrcaWhirlpoolParsedEvent;
 
+    async fn new(
+        db_pool: PgPool,
+        provided_pools: Option<&Vec<String>>,
+        connection_config: ConnectionConfig
+    ) -> Result<Self> {
+        // Create the repository for database access
+        let repository = OrcaWhirlpoolRepository::new(db_pool.clone());
+
+        // Resolve pool addresses with priority: CLI args > DB > Default
+        let pool_pubkeys = repository.get_pools_with_fallback(
+            provided_pools,
+            DEFAULT_ORCA_POOL
+        ).await?;
+
+        // Log the source of pool addresses
+        if provided_pools.is_some() && !provided_pools.unwrap().is_empty() {
+            crate::utils::logging::log_activity(
+                DEX,
+                "Pool source",
+                Some("from command line arguments")
+            );
+        } else if pool_pubkeys.len() > 1 {
+            crate::utils::logging::log_activity(DEX, "Pool source", Some("from database"));
+        } else {
+            crate::utils::logging::log_activity(
+                DEX,
+                "Pool source",
+                Some("using default pool (no pools in CLI or database)")
+            );
+        }
+
+        // Create the signature store
+        let signature_store = SignatureStore::Database(DbSignatureStore::new(db_pool.clone()));
+
+        // Create the backfill manager
+        let backfill_config = BackfillConfig {
+            rpc_url: connection_config.rpc_url.clone(),
+            max_signatures_per_request: 100,
+            initial_backfill_slots: 10_000,
+            dex_type: DEX.to_string(),
+        };
+        let backfill_manager = BackfillManager::new(backfill_config, signature_store.clone());
+
+        Ok(Self {
+            repository,
+            pool_pubkeys,
+            signature_store,
+            backfill_manager,
+            connection_config,
+        })
+    }
+
     fn program_ids(&self) -> Vec<&str> {
         vec!["whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc"]
     }
@@ -182,6 +181,18 @@ impl DexIndexer for OrcaWhirlpoolIndexer {
 
     fn dex_name(&self) -> &str {
         DEX
+    }
+
+    fn signature_store(&self) -> &SignatureStore {
+        &self.signature_store
+    }
+
+    fn backfill_manager(&self) -> &BackfillManager {
+        &self.backfill_manager
+    }
+
+    fn connection_config(&self) -> &ConnectionConfig {
+        &self.connection_config
     }
 
     /// Parse events from a log, returning any found events without persisting them

@@ -14,11 +14,7 @@ use anyhow::Result;
 ///
 /// This provides a clean public API for starting indexers without having to
 /// create public wrapper methods for each implementation
-pub async fn start_indexer<T: DexIndexer + Send + Sync>(
-    indexer: &T,
-    rpc_url: &str,
-    ws_url: &str
-) -> Result<()> {
+pub async fn start_indexer<T: DexIndexer + Send + Sync>(indexer: &T) -> Result<()> {
     // Call the trait method
-    indexer.start(rpc_url, ws_url).await
+    indexer.start().await
 }

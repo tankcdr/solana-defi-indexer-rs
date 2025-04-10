@@ -10,7 +10,7 @@ use clap::{ Parser, Subcommand };
 
 use indexer::{
     db::{ Database, DbConfig },
-    indexers::{ OrcaWhirlpoolIndexer, start_indexer },
+    indexers::{ start_indexer, ConnectionConfig, DexIndexer, OrcaWhirlpoolIndexer },
     utils::logging,
 };
 
@@ -69,6 +69,9 @@ async fn main() -> Result<()> {
     let db = Database::connect(db_config).await.context("Failed to connect to database")?;
     logging::log_activity("system", "Database connection", Some("Successfully connected"));
 
+    // Create connection configuration
+    let connection_config = ConnectionConfig::new(cli.rpc_url, cli.ws_url);
+
     match &cli.command {
         Command::Orca { pools } => {
             logging::log_activity(
@@ -78,15 +81,14 @@ async fn main() -> Result<()> {
             );
 
             // Create indexer with resolved pool addresses in one operation
-            let indexer = OrcaWhirlpoolIndexer::create_with_pools(
+            let indexer = OrcaWhirlpoolIndexer::new(
                 db.pool().clone(),
-                pools.as_ref()
+                pools.as_ref(),
+                connection_config
             ).await?;
 
             // Start the indexer (pools are contained within the indexer)
-            start_indexer(&indexer, &cli.rpc_url, &cli.ws_url).await.context(
-                "Orca indexer failed"
-            )?;
+            start_indexer(&indexer).await.context("Orca indexer failed")?;
         }
         // For future implementation
         /*
