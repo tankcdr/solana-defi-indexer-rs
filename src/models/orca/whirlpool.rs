@@ -68,22 +68,21 @@ pub struct OrcaWhirlpoolPoolInitializedEvent {
 #[derive(BorshDeserialize, Debug)]
 pub struct OrcaWhirlpoolTradedEvent {
     pub whirlpool: Pubkey,
+    pub token_vault_a: Pubkey,
+    pub token_vault_b: Pubkey,
+    pub tick_array_lower: Pubkey,
+    pub tick_array_upper: Pubkey,
     pub a_to_b: bool,
-    pub pre_sqrt_price: u128,
-    pub post_sqrt_price: u128,
     pub input_amount: u64,
     pub output_amount: u64,
     pub input_transfer_fee: u64,
     pub output_transfer_fee: u64,
-    pub lp_fee: u64,
     pub protocol_fee: u64,
+    pub lp_fee: u64,
+    pub pre_sqrt_price: u128,
+    pub post_sqrt_price: u128,
 }
 
-// IMPORTANT: LiquidityIncreased and LiquidityDecreased events must remain separate structures
-// even if their fields are identical. This allows for future divergence in their implementations
-// and ensures proper semantic distinction between the two operations.
-
-/// Event emitted when liquidity is increased in a whirlpool
 #[derive(BorshDeserialize, Debug)]
 pub struct OrcaWhirlpoolLiquidityIncreasedEvent {
     pub whirlpool: Pubkey,
@@ -97,7 +96,6 @@ pub struct OrcaWhirlpoolLiquidityIncreasedEvent {
     pub token_b_transfer_fee: u64,
 }
 
-/// Event emitted when liquidity is decreased in a whirlpool
 #[derive(BorshDeserialize, Debug)]
 pub struct OrcaWhirlpoolLiquidityDecreasedEvent {
     pub whirlpool: Pubkey,
@@ -111,8 +109,7 @@ pub struct OrcaWhirlpoolLiquidityDecreasedEvent {
     pub token_b_transfer_fee: u64,
 }
 
-// Database models matching the orca_whirlpool_events table
-
+// Base event record structure (common fields for all events)
 #[derive(Debug, Clone, FromRow)]
 pub struct OrcaWhirlpoolEvent {
     pub id: i32,
@@ -123,21 +120,7 @@ pub struct OrcaWhirlpoolEvent {
     pub timestamp: DateTime<Utc>,
 }
 
-impl OrcaWhirlpoolEvent {
-    pub fn new(signature: String, whirlpool: Pubkey, event_type: OrcaWhirlpoolEventType) -> Self {
-        Self {
-            id: 0, // Will be set by the database
-            signature,
-            whirlpool: whirlpool.to_string(),
-            event_type: event_type.to_string(),
-            version: 1,
-            timestamp: Utc::now(),
-        }
-    }
-}
-
-// Database models for specific event types
-
+// Database event record structures
 #[derive(Debug, Clone, FromRow)]
 pub struct OrcaWhirlpoolTradedRecord {
     pub event_id: i32,
@@ -201,22 +184,34 @@ pub struct OrcaWhirlpoolLiquidityRecord {
     pub token_b_transfer_fee: i64,
 }
 
-// Composite types for inserting events with their specific data
-
-#[derive(Debug)]
+// Combined record structures for each event type
+#[derive(Debug, Clone)]
 pub struct OrcaWhirlpoolTradedEventRecord {
     pub base: OrcaWhirlpoolEvent,
     pub data: OrcaWhirlpoolTradedRecord,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OrcaWhirlpoolLiquidityIncreasedEventRecord {
     pub base: OrcaWhirlpoolEvent,
-    pub data: OrcaWhirlpoolLiquidityRecord,
+    pub data: OrcaWhirlpoolLiquidityRecord, // Using the legacy record to maintain compatibility
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OrcaWhirlpoolLiquidityDecreasedEventRecord {
     pub base: OrcaWhirlpoolEvent,
-    pub data: OrcaWhirlpoolLiquidityRecord,
+    pub data: OrcaWhirlpoolLiquidityRecord, // Using the legacy record to maintain compatibility
+}
+
+/// Orca Whirlpool Pool record
+#[derive(Debug, Clone)]
+pub struct OrcaWhirlpoolPool {
+    pub whirlpool: String,
+    pub token_mint_a: String,
+    pub token_mint_b: String,
+    pub token_name_a: Option<String>,
+    pub token_name_b: Option<String>,
+    pub pool_name: Option<String>,
+    pub decimals_a: i32,
+    pub decimals_b: i32,
 }

@@ -1,5 +1,4 @@
 use anyhow::{ Context, Result };
-use async_trait::async_trait;
 use borsh::BorshDeserialize;
 use solana_client::rpc_response::RpcLogsResponse;
 use solana_sdk::pubkey::Pubkey;
@@ -7,7 +6,7 @@ use std::collections::HashSet;
 use std::str::FromStr;
 use sqlx::PgPool;
 
-use crate::db::repositories::{ OrcaWhirlpoolRepository, OrcaWhirlpoolPoolRepository };
+use crate::db::repositories::OrcaWhirlpoolRepository;
 use crate::indexers::dex_indexer::DexIndexer;
 use crate::models::orca::whirlpool::{
     TRADED_EVENT_DISCRIMINATOR,
@@ -73,11 +72,11 @@ impl OrcaWhirlpoolIndexer {
         db_pool: PgPool,
         provided_pools: Option<&Vec<String>>
     ) -> Result<Self> {
-        // Create the pool repository for address resolution
-        let pool_repo = OrcaWhirlpoolPoolRepository::new(db_pool.clone());
+        // Create the repository for database access
+        let repository = OrcaWhirlpoolRepository::new(db_pool.clone());
 
         // Resolve pool addresses
-        let pool_pubkeys = pool_repo.get_pools_with_fallback(
+        let pool_pubkeys = repository.get_pools_with_fallback(
             provided_pools,
             DEFAULT_ORCA_POOL
         ).await?;
@@ -101,8 +100,6 @@ impl OrcaWhirlpoolIndexer {
             );
         }
 
-        // Create the indexer with the resolved pools
-        let repository = OrcaWhirlpoolRepository::new(db_pool);
         Ok(Self::new(repository, pool_pubkeys))
     }
 
@@ -168,7 +165,7 @@ impl OrcaWhirlpoolIndexer {
     }
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl DexIndexer for OrcaWhirlpoolIndexer {
     type Repository = OrcaWhirlpoolRepository;
     type ParsedEvent = OrcaWhirlpoolParsedEvent;
