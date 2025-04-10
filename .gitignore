@@ -1,6 +1,5 @@
 .env
 .env.local
-.env.example
 
 .vscode/
 .idea/
