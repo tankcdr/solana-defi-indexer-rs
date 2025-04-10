@@ -26,6 +26,7 @@ use crate::models::orca::whirlpool::{
 
 // Default Orca pool (SOL/USDC)
 const DEFAULT_ORCA_POOL: &str = "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE";
+const DEX: &str = "orca";
 
 /// Represents a parsed event from Orca Whirlpool logs
 #[derive(Debug)]
@@ -81,20 +82,17 @@ impl OrcaWhirlpoolIndexer {
             DEFAULT_ORCA_POOL
         ).await?;
 
-        // Get component name for logging
-        let component = "orca";
-
         if provided_pools.is_some() && !provided_pools.unwrap().is_empty() {
             crate::utils::logging::log_activity(
-                component,
+                DEX,
                 "Pool source",
                 Some("from command line arguments")
             );
         } else if pool_pubkeys.len() > 1 {
-            crate::utils::logging::log_activity(component, "Pool source", Some("from database"));
+            crate::utils::logging::log_activity(DEX, "Pool source", Some("from database"));
         } else {
             crate::utils::logging::log_activity(
-                component,
+                DEX,
                 "Pool source",
                 Some("using default pool (no pools in CLI or database)")
             );
@@ -183,7 +181,7 @@ impl DexIndexer for OrcaWhirlpoolIndexer {
     }
 
     fn dex_name(&self) -> &str {
-        "orca"
+        DEX
     }
 
     /// Parse events from a log, returning any found events without persisting them
