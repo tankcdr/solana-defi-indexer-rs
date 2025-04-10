@@ -113,6 +113,8 @@ pub struct OrcaWhirlpoolLiquidityDecreasedEvent {
 
 // Database models matching the orca_whirlpool_events table
 
+// Database models matching the orca_whirlpool_events table
+
 #[derive(Debug, Clone, FromRow)]
 pub struct OrcaWhirlpoolEvent {
     pub id: i32,

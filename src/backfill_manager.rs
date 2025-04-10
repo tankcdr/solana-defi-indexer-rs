@@ -9,6 +9,7 @@ use solana_transaction_status::UiTransactionEncoding;
 use std::str::FromStr;
 
 use crate::db::signature_store::SignatureStore;
+use crate::utils::logging;
 
 /// Configuration for backfill operations
 pub struct BackfillConfig {
@@ -57,7 +58,12 @@ impl BackfillManager {
 
     /// Perform initial backfill for a pool to establish baseline data
     pub async fn initial_backfill_for_pool(&self, pool: &Pubkey) -> Result<Vec<Signature>> {
-        println!("Performing initial backfill for pool {}", pool);
+        logging::log_dex_activity(
+            "backfill",
+            &self.config.dex_type,
+            "Initial backfill",
+            Some(&format!("for pool {}", pool))
+        );
 
         let signatures = self.rpc_client.get_signatures_for_address_with_config(
             pool,
@@ -95,10 +101,11 @@ impl BackfillManager {
             ).await?;
         }
 
-        println!(
-            "Initial backfill complete for pool {}, fetched {} signatures",
-            pool,
-            result.len()
+        logging::log_dex_activity(
+            "backfill",
+            &self.config.dex_type,
+            "Initial backfill complete",
+            Some(&format!("for pool {}, fetched {} signatures", pool, result.len()))
         );
         Ok(result)
     }
@@ -110,12 +117,21 @@ impl BackfillManager {
         {
             Some(sig) => sig,
             None => {
-                println!("No last signature for pool {}, performing initial backfill", pool);
+                logging::log_dex_activity(
+                    "backfill",
+                    &self.config.dex_type,
+                    "No last signature",
+                    Some(&format!("for pool {}, performing initial backfill", pool))
+                );
                 return self.initial_backfill_for_pool(pool).await;
             }
         };
-
-        println!("Backfilling pool {} since signature {}", pool, last_signature);
+        logging::log_dex_activity(
+            "backfill",
+            &self.config.dex_type,
+            "Incremental backfill",
+            Some(&format!("for pool {} since signature {}", pool, last_signature))
+        );
 
         // Convert the last_signature string to a Signature
         let until_signature = Signature::from_str(&last_signature)?;
@@ -133,11 +149,20 @@ impl BackfillManager {
         let mut result = Vec::new();
 
         if signatures.is_empty() {
-            println!("No new transactions since last signature");
+            logging::log_dex_activity(
+                "backfill",
+                &self.config.dex_type,
+                "No updates",
+                Some("No new transactions since last signature")
+            );
             return Ok(result);
         }
-
-        println!("Found {} new transactions since last signature", signatures.len());
+        logging::log_dex_activity(
+            "backfill",
+            &self.config.dex_type,
+            "New transactions found",
+            Some(&format!("{} new transactions since last signature", signatures.len()))
+        );
 
         // Process from newest to oldest
         for info in &signatures {

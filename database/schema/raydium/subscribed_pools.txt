@@ -2,5 +2,9 @@
 # Format: One pool address per line. Lines starting with # are comments.
 
 # Add your Raydium pool addresses below
-# Example:
-# 58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2
+# SOL - USDC
+3ucNos4NbumPLZNWztqGHNFFgkHeRMBQAVemeeomsUxv
+#SOL - PEPEH
+BjAf2SpsbjT4Nw9rYiCUxadA6DudB7Sx9EeiLhxYc6Fj
+# $URO - $RIF
+G2qJ43nazngkTeMatTKGK3rxMQ13VY3cerFc7mRCN2Fw

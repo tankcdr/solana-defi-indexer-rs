@@ -2088,6 +2088,7 @@ name = "indexer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.22.1",
  "borsh 0.10.4",
  "borsh-derive 0.10.4",

@@ -41,6 +41,7 @@ borsh-derive = "0.10.3"
 dotenv = "0.15"
 chrono = { version = "0.4", features = ["serde"] }
 mpl-token-metadata = "5.1.0"
+async-trait = "0.1.0"
 
 # Database dependencies
 sqlx = { version = "0.6", default-features = false, features = [

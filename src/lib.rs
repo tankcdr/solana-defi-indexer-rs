@@ -4,6 +4,7 @@ pub mod db;
 pub mod indexers;
 pub mod websocket_manager;
 pub mod backfill_manager;
+pub mod utils;
 
 // Re-export common types and traits
 pub use models::common::Protocol;

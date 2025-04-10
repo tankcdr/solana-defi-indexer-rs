@@ -12,6 +12,8 @@ use std::time::{ Duration, Instant };
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
+use crate::utils::logging;
+
 /// Configuration for the WebSocket manager
 pub struct WebSocketConfig {
     /// WebSocket URL
@@ -88,7 +90,11 @@ impl WebSocketManager {
 
                     match subscription_result {
                         Ok((mut log_stream, _subscription_id)) => {
-                            println!("WebSocket connection established successfully");
+                            logging::log_activity(
+                                "websocket",
+                                "Connection",
+                                Some("established successfully")
+                            );
 
                             // Reset reconnection counters upon successful connection
                             reconnect_attempts = 0;
@@ -104,20 +110,36 @@ impl WebSocketManager {
 
                                 // Send to channel, break if channel is closed
                                 if tx.send(response.value).await.is_err() {
-                                    println!("Channel closed, stopping WebSocket subscription");
+                                    logging::log_activity(
+                                        "websocket",
+                                        "Channel closed",
+                                        Some("stopping WebSocket subscription")
+                                    );
                                     return;
                                 }
                             }
 
-                            println!("WebSocket connection dropped, will reconnect...");
+                            logging::log_activity(
+                                "websocket",
+                                "Connection dropped",
+                                Some("will reconnect...")
+                            );
                         }
                         Err(e) => {
-                            eprintln!("Failed to subscribe to logs: {}", e);
+                            logging::log_error(
+                                "websocket",
+                                "Subscription failure",
+                                &anyhow::anyhow!("{}", e)
+                            );
                         }
                     }
                 } else if let Err(e) = pubsub_client_result {
                     // Log connection error
-                    eprintln!("Failed to establish WebSocket connection: {}", e);
+                    logging::log_error(
+                        "websocket",
+                        "Connection failure",
+                        &anyhow::anyhow!("{}", e)
+                    );
                 }
 
                 // Check if we've hit the maximum reconnection attempts
@@ -125,23 +147,32 @@ impl WebSocketManager {
                     config.max_reconnect_attempts > 0 &&
                     reconnect_attempts >= config.max_reconnect_attempts
                 {
-                    eprintln!(
+                    let msg = format!(
                         "Maximum reconnection attempts reached ({}), stopping reconnection",
                         config.max_reconnect_attempts
+                    );
+                    logging::log_error(
+                        "websocket",
+                        "Reconnection limit reached",
+                        &anyhow::anyhow!("{}", msg)
                     );
                     break;
                 }
 
                 // Implement exponential backoff for reconnection
                 reconnect_attempts += 1;
-                println!("Reconnection attempt {} in {} ms", reconnect_attempts, reconnect_delay);
+                logging::log_activity(
+                    "websocket",
+                    "Reconnection",
+                    Some(&format!("attempt {} in {} ms", reconnect_attempts, reconnect_delay))
+                );
                 sleep(Duration::from_millis(reconnect_delay)).await;
 
                 // Increase delay for next attempt with exponential backoff
                 reconnect_delay = std::cmp::min(reconnect_delay * 2, config.reconnect_max_delay_ms);
             }
 
-            println!("WebSocket manager stopped");
+            logging::log_activity("websocket", "Manager stopped", None);
         });
 
         Ok(rx)

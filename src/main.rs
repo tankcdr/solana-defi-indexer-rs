@@ -8,7 +8,11 @@
 use anyhow::{ Context, Result };
 use clap::{ Parser, Subcommand };
 
-use indexer::{ db::{ Database, DbConfig }, indexers::OrcaWhirlpoolIndexer };
+use indexer::{
+    db::{ Database, DbConfig },
+    indexers::{ OrcaWhirlpoolIndexer, start_indexer },
+    utils::logging,
+};
 
 // Default values
 const DEFAULT_RPC_URL: &str = "https://api.mainnet-beta.solana.com";
@@ -63,10 +67,15 @@ async fn main() -> Result<()> {
 
     // Connect to the database
     let db = Database::connect(db_config).await.context("Failed to connect to database")?;
+    logging::log_activity("system", "Database connection", Some("Successfully connected"));
 
     match &cli.command {
         Command::Orca { pools } => {
-            println!("Starting Orca Whirlpool indexer...");
+            logging::log_activity(
+                "system",
+                "Indexer initialization",
+                Some("Starting Orca Whirlpool indexer")
+            );
 
             // Create indexer with resolved pool addresses in one operation
             let indexer = OrcaWhirlpoolIndexer::create_with_pools(
@@ -75,12 +84,14 @@ async fn main() -> Result<()> {
             ).await?;
 
             // Start the indexer (pools are contained within the indexer)
-            indexer.start(&cli.rpc_url, &cli.ws_url).await.context("Orca indexer failed")?;
+            start_indexer(&indexer, &cli.rpc_url, &cli.ws_url).await.context(
+                "Orca indexer failed"
+            )?;
         }
         // For future implementation
         /*
         Command::Raydium { pools } => {
-            println!("Raydium indexer not yet implemented");
+            logging::log_activity("system", "Raydium indexer", Some("not yet implemented"));
             // TODO: Implement Raydium indexer
         }
         */

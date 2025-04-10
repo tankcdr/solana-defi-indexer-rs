@@ -222,11 +222,7 @@ pub struct RaydiumSwapEvent {
     pub price: u64,
 }
 
-impl RaydiumSwapEvent {
-    pub fn try_from_bytes(data: &[u8]) -> Result<Self, borsh::maybestd::io::Error> {
-        Self::try_from_slice(data)
-    }
-}
+
 
 // Database models
 #[derive(Debug, Clone, FromRow)]
