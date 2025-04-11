@@ -93,7 +93,11 @@ pub trait DexIndexer {
     async fn parse_log_events(&self, log: &RpcLogsResponse) -> Result<Vec<Self::ParsedEvent>>;
 
     /// Handle a single event (for both real-time and backfill processing)
-    async fn handle_event(&self, event: Self::ParsedEvent) -> Result<()>;
+    ///
+    /// Parameters:
+    /// - event: The parsed event to handle
+    /// - is_backfill: Flag indicating if this event comes from backfill (true) or live streaming (false)
+    async fn handle_event(&self, event: Self::ParsedEvent, is_backfill: bool) -> Result<()>;
 
     //
     // CORE PROCESSING METHODS (default implementations)
@@ -107,17 +111,16 @@ pub trait DexIndexer {
         }
 
         // Parse and process events
-        let start = std::time::Instant::now();
         let events = self.parse_log_events(log).await?;
 
         for event in events {
-            if let Err(e) = self.handle_event(event).await {
+            // Real-time events from WebSocket/process_log are not backfill
+            if let Err(e) = self.handle_event(event, false).await {
                 self.log_error("Failed to handle event", &e);
                 // Continue processing other events
             }
         }
 
-        self.record_processing_time("process_log", start.elapsed().as_millis() as u64);
         Ok(())
     }
 
@@ -153,11 +156,32 @@ pub trait DexIndexer {
 
     /// Extract binary data from log lines
     fn extract_event_data(&self, log_line: &str) -> Option<Vec<u8>> {
+        log::debug!("[{}] Attempting to extract event data from: {}", self.dex_name(), log_line);
+
         let parts: Vec<&str> = log_line.split("Program data: ").collect();
+
         if parts.len() >= 2 {
-            if let Ok(decoded) = general_purpose::STANDARD.decode(parts[1]) {
-                return Some(decoded);
+            log::debug!("[{}] Found Program data section", self.dex_name());
+
+            let base64_data = parts[1];
+            log::debug!("[{}] Base64 data to decode: {}", self.dex_name(), base64_data);
+
+            match general_purpose::STANDARD.decode(base64_data) {
+                Ok(decoded) => {
+                    log::debug!(
+                        "[{}] Successfully decoded data, length: {}, first few bytes: {:?}",
+                        self.dex_name(),
+                        decoded.len(),
+                        &decoded.iter().take(8).collect::<Vec<_>>()
+                    );
+                    return Some(decoded);
+                }
+                Err(e) => {
+                    log::debug!("[{}] Failed to decode base64 data: {}", self.dex_name(), e);
+                }
             }
+        } else {
+            log::debug!("[{}] No 'Program data:' section found in log line", self.dex_name());
         }
         None
     }
@@ -169,7 +193,19 @@ pub trait DexIndexer {
 
     /// Check if a pubkey is in the monitored pool set
     fn is_monitored_pool(&self, pool: &Pubkey, pool_set: &HashSet<Pubkey>) -> bool {
-        pool_set.contains(pool)
+        let is_monitored = pool_set.contains(pool);
+        log::debug!(
+            "[{}] Pool check: {} is{} in monitored set of {} pools",
+            self.dex_name(),
+            pool,
+            if is_monitored {
+                ""
+            } else {
+                " not"
+            },
+            pool_set.len()
+        );
+        is_monitored
     }
 
     /// Check if a log contains events from any of the monitored programs
@@ -471,26 +507,71 @@ pub trait DexIndexer {
         let backfill_manager = self.backfill_manager();
 
         for sig in signatures {
+            log::debug!("[{}] Processing backfill signature: {}", self.dex_name(), sig);
             match backfill_manager.fetch_transaction(sig).await {
                 Ok(tx) => {
-                    if let Some(meta) = tx.transaction.meta {
+                    log::debug!("[{}] Successfully fetched transaction: {}", self.dex_name(), sig);
+
+                    if let Some(meta) = tx.transaction.meta.clone() {
+                        log::debug!("[{}] Transaction has metadata", self.dex_name());
+
                         if
                             let Some(log_messages) = Into::<Option<Vec<String>>>::into(
                                 meta.log_messages
                             )
                         {
+                            log::debug!(
+                                "[{}] Transaction has {} log messages",
+                                self.dex_name(),
+                                log_messages.len()
+                            );
+
+                            // Sample the first few log lines for debugging
+                            if !log_messages.is_empty() {
+                                let sample_size = std::cmp::min(3, log_messages.len());
+                                for i in 0..sample_size {
+                                    log::debug!(
+                                        "[{}] Log sample {}/{}: {}",
+                                        self.dex_name(),
+                                        i + 1,
+                                        sample_size,
+                                        log_messages[i]
+                                    );
+                                }
+                            }
+
                             let logs_response = self.tx_to_logs_response(
                                 &sig.to_string(),
                                 &log_messages
                             );
 
                             // Parse events from this transaction
+                            log::debug!(
+                                "[{}] Parsing events from transaction: {}",
+                                self.dex_name(),
+                                sig
+                            );
                             let events = self.parse_log_events(&logs_response).await?;
+
+                            log::debug!(
+                                "[{}] Found {} events in transaction {}",
+                                self.dex_name(),
+                                events.len(),
+                                sig
+                            );
 
                             if !events.is_empty() {
                                 success_count += 1;
                                 event_batch.extend(events);
+                            } else {
+                                log::debug!(
+                                    "[{}] No events found in transaction {}",
+                                    self.dex_name(),
+                                    sig
+                                );
                             }
+                        } else {
+                            log::debug!("[{}] Transaction has no log messages", self.dex_name());
                         }
                     }
                 }
@@ -501,21 +582,50 @@ pub trait DexIndexer {
             }
         }
 
+        // Count events before we move them
+        let event_batch_len = event_batch.len();
+
+        // Give detailed stats about what we found
+        self.log_activity(
+            "Backfill transaction processing results",
+            Some(
+                &format!(
+                    "Processed {} transactions, found events in {} transactions, total events: {}",
+                    total,
+                    success_count,
+                    event_batch_len
+                )
+            )
+        );
+
         // Process each event individually
         if !event_batch.is_empty() {
             // Log that we're processing events
             self.log_activity(
                 "Processing backfill events",
-                Some(&format!("{} events", event_batch.len()))
+                Some(&format!("{} events", event_batch_len))
             );
 
             // Process each event individually
+            let mut processed_count = 0;
             for event in event_batch {
-                if let Err(e) = self.handle_event(event).await {
+                // These events come from backfill, so set is_backfill to true
+                if let Err(e) = self.handle_event(event, true).await {
                     self.log_error("Failed to process backfill event", &e);
                     // Continue with next event
+                } else {
+                    processed_count += 1;
                 }
             }
+
+            log::debug!(
+                "[{}] Successfully processed {}/{} backfill events",
+                self.dex_name(),
+                processed_count,
+                event_batch_len
+            );
+        } else {
+            log::debug!("[{}] No events to process from {} transactions", self.dex_name(), total);
         }
 
         Ok((total, success_count))

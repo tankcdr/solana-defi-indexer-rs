@@ -22,7 +22,7 @@ pub use models::orca::whirlpool::{
     OrcaWhirlpoolLiquidityDecreasedEvent,
 };
 pub use db::repositories::OrcaWhirlpoolRepository;
-pub use models::orca::whirlpool::OrcaWhirlpoolPool;
+pub use models::orca::whirlpool::OrcaWhirlpoolPoolRecord;
 pub use indexers::OrcaWhirlpoolIndexer;
 
 pub use websocket_manager::{ WebSocketManager, WebSocketConfig };

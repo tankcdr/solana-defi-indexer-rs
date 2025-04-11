@@ -205,7 +205,7 @@ pub struct OrcaWhirlpoolLiquidityDecreasedEventRecord {
 
 /// Orca Whirlpool Pool record
 #[derive(Debug, Clone)]
-pub struct OrcaWhirlpoolPool {
+pub struct OrcaWhirlpoolPoolRecord {
     pub whirlpool: String,
     pub token_mint_a: String,
     pub token_mint_b: String,

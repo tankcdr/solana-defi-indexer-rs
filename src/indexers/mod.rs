@@ -1,8 +1,10 @@
 pub mod dex_indexer;
 pub mod orca;
+///pub mod raydium;
 
 pub use dex_indexer::*;
 pub use orca::*;
+///pub use raydium::*;
 
 // Future protocol indexers will be added here
 // pub mod raydium;

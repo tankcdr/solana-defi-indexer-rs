@@ -197,6 +197,13 @@ impl DexIndexer for OrcaWhirlpoolIndexer {
 
     /// Parse events from a log, returning any found events without persisting them
     async fn parse_log_events(&self, log: &RpcLogsResponse) -> Result<Vec<Self::ParsedEvent>> {
+        // Debug log to see contents of log messages
+        log::debug!(
+            "[orca] Parsing log with signature: {}, contains {} log lines",
+            log.signature,
+            log.logs.len()
+        );
+
         // Quick initial check for relevant event keywords
         let contains_relevant_events = log.logs
             .iter()
@@ -207,6 +214,7 @@ impl DexIndexer for OrcaWhirlpoolIndexer {
             });
 
         if !contains_relevant_events {
+            log::debug!("[orca] No relevant event keywords found in log {}", log.signature);
             return Ok(Vec::new());
         }
 
@@ -219,71 +227,114 @@ impl DexIndexer for OrcaWhirlpoolIndexer {
             .collect();
 
         // Find a mention of a whirlpool address that matches our active pools
-        for line in &log_lines {
+        for (i, line) in log_lines.iter().enumerate() {
             if line.contains("Program data:") {
-                // Extract the binary data part
-                if let Some(data) = self.extract_event_data(line) {
-                    if data.len() >= 8 {
-                        // Get the discriminator (first 8 bytes)
-                        let discriminator = &data[0..8];
+                log::debug!("[orca] Found program data in line {}: {}", i, line);
 
-                        // Using if-else statements with slice comparisons instead of match
-                        if discriminator == &TRADED_EVENT_DISCRIMINATOR[..] {
-                            if let Ok(event) = OrcaWhirlpoolTradedEvent::try_from_slice(&data[8..]) {
-                                // Check if this pool is in our watch list
-                                if self.is_monitored_pool(&event.whirlpool, self.pool_pubkeys()) {
-                                    self.log_traded_event(&event);
-                                    events.push(
-                                        OrcaWhirlpoolParsedEvent::Traded(
-                                            event,
-                                            log.signature.clone()
-                                        )
-                                    );
+                // Extract the binary data part
+                match self.extract_event_data(line) {
+                    Some(data) => {
+                        log::debug!("[orca] Successfully extracted data, length: {}", data.len());
+                        if data.len() >= 8 {
+                            // Get the discriminator (first 8 bytes)
+                            let discriminator = &data[0..8];
+
+                            // Using if-else statements with slice comparisons instead of match
+                            if discriminator == &TRADED_EVENT_DISCRIMINATOR[..] {
+                                log::debug!("[orca] Found TRADED_EVENT_DISCRIMINATOR");
+                                match OrcaWhirlpoolTradedEvent::try_from_slice(&data[8..]) {
+                                    Ok(event) => {
+                                        log::debug!(
+                                            "[orca] Successfully parsed trade event for pool: {}",
+                                            event.whirlpool
+                                        );
+
+                                        // Check if this pool is in our watch list
+                                        let is_monitored = self.is_monitored_pool(
+                                            &event.whirlpool,
+                                            self.pool_pubkeys()
+                                        );
+                                        log::debug!("[orca] Is pool monitored: {}", is_monitored);
+
+                                        if is_monitored {
+                                            self.log_traded_event(&event);
+                                            events.push(
+                                                OrcaWhirlpoolParsedEvent::Traded(
+                                                    event,
+                                                    log.signature.clone()
+                                                )
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::debug!("[orca] Failed to parse trade event: {}", e);
+                                    }
                                 }
-                            }
-                        } else if discriminator == &LIQUIDITY_INCREASED_DISCRIMINATOR[..] {
-                            if
-                                let Ok(event) =
-                                    OrcaWhirlpoolLiquidityIncreasedEvent::try_from_slice(&data[8..])
-                            {
-                                // Check if this pool is in our watch list
-                                if self.is_monitored_pool(&event.whirlpool, self.pool_pubkeys()) {
-                                    self.log_liquidity_increased_event(&event);
-                                    events.push(
-                                        OrcaWhirlpoolParsedEvent::LiquidityIncreased(
-                                            event,
-                                            log.signature.clone()
+                            } else if discriminator == &LIQUIDITY_INCREASED_DISCRIMINATOR[..] {
+                                if
+                                    let Ok(event) =
+                                        OrcaWhirlpoolLiquidityIncreasedEvent::try_from_slice(
+                                            &data[8..]
                                         )
-                                    );
+                                {
+                                    // Check if this pool is in our watch list
+                                    if
+                                        self.is_monitored_pool(
+                                            &event.whirlpool,
+                                            self.pool_pubkeys()
+                                        )
+                                    {
+                                        self.log_liquidity_increased_event(&event);
+                                        events.push(
+                                            OrcaWhirlpoolParsedEvent::LiquidityIncreased(
+                                                event,
+                                                log.signature.clone()
+                                            )
+                                        );
+                                    }
                                 }
-                            }
-                        } else if discriminator == &LIQUIDITY_DECREASED_DISCRIMINATOR[..] {
-                            if
-                                let Ok(event) =
-                                    OrcaWhirlpoolLiquidityDecreasedEvent::try_from_slice(&data[8..])
-                            {
-                                // Check if this pool is in our watch list
-                                if self.is_monitored_pool(&event.whirlpool, self.pool_pubkeys()) {
-                                    self.log_liquidity_decreased_event(&event);
-                                    events.push(
-                                        OrcaWhirlpoolParsedEvent::LiquidityDecreased(
-                                            event,
-                                            log.signature.clone()
+                            } else if discriminator == &LIQUIDITY_DECREASED_DISCRIMINATOR[..] {
+                                if
+                                    let Ok(event) =
+                                        OrcaWhirlpoolLiquidityDecreasedEvent::try_from_slice(
+                                            &data[8..]
                                         )
-                                    );
+                                {
+                                    // Check if this pool is in our watch list
+                                    if
+                                        self.is_monitored_pool(
+                                            &event.whirlpool,
+                                            self.pool_pubkeys()
+                                        )
+                                    {
+                                        self.log_liquidity_decreased_event(&event);
+                                        events.push(
+                                            OrcaWhirlpoolParsedEvent::LiquidityDecreased(
+                                                event,
+                                                log.signature.clone()
+                                            )
+                                        );
+                                    }
                                 }
                             }
                         }
+                    }
+                    None => {
+                        log::debug!("[orca] Failed to extract event data from line");
                     }
                 }
             }
         }
 
+        log::debug!("[orca] Parsed {} events from log {}", events.len(), log.signature);
         Ok(events)
     }
 
     /// Handle a single event (for both real-time and backfill processing)
-    async fn handle_event(&self, event: Self::ParsedEvent) -> Result<()> {
+    async fn handle_event(&self, event: Self::ParsedEvent, is_backfill: bool) -> Result<()> {
+        // Create a source label for logging
+        let source_label = if is_backfill { "BACKFILL" } else { "LIVE" };
+
         match event {
             OrcaWhirlpoolParsedEvent::Traded(event_data, signature) => {
                 // Create the base event
@@ -311,6 +362,16 @@ impl DexIndexer for OrcaWhirlpoolIndexer {
                     base: base_event,
                     data,
                 };
+                // Add source to log message
+                log::info!(
+                    "[{}][{}] Traded event: pool={}, a_to_b={}, in={}, out={}",
+                    self.dex_name(),
+                    source_label,
+                    event_data.whirlpool.to_string(),
+                    event_data.a_to_b,
+                    event_data.input_amount,
+                    event_data.output_amount
+                );
 
                 self.repository.insert_traded_event(event_record).await?;
             }
@@ -340,6 +401,17 @@ impl DexIndexer for OrcaWhirlpoolIndexer {
                     data,
                 };
 
+                // Add source to log message
+                log::info!(
+                    "[{}][{}] LiquidityIncreased event: pool={}, position={}, tokenA={}, tokenB={}",
+                    self.dex_name(),
+                    source_label,
+                    event_data.whirlpool.to_string(),
+                    event_data.position.to_string(),
+                    event_data.token_a_amount,
+                    event_data.token_b_amount
+                );
+
                 self.repository.insert_liquidity_increased_event(event_record).await?;
             }
             OrcaWhirlpoolParsedEvent::LiquidityDecreased(event_data, signature) => {
@@ -367,6 +439,17 @@ impl DexIndexer for OrcaWhirlpoolIndexer {
                     base: base_event,
                     data,
                 };
+
+                // Add source to log message
+                log::info!(
+                    "[{}][{}] LiquidityDecreased event: pool={}, position={}, tokenA={}, tokenB={}",
+                    self.dex_name(),
+                    source_label,
+                    event_data.whirlpool.to_string(),
+                    event_data.position.to_string(),
+                    event_data.token_a_amount,
+                    event_data.token_b_amount
+                );
 
                 self.repository.insert_liquidity_decreased_event(event_record).await?;
             }

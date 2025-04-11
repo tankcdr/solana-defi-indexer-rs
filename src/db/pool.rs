@@ -4,6 +4,8 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::utils::logging;
+
 /// Database configuration for connecting to Supabase
 #[derive(Debug, Clone)]
 pub struct DbConfig {
@@ -54,7 +56,7 @@ impl Database {
         // Verify connection by running a simple query
         sqlx::query("SELECT 1").execute(&pool).await.context("Failed to execute test query")?;
 
-        println!("Successfully connected to database");
+        logging::log_activity("database", "Successfully connected to database", None);
 
         Ok(Self {
             pool: Arc::new(pool),

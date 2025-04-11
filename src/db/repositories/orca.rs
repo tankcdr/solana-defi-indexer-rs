@@ -10,7 +10,7 @@ use crate::models::orca::whirlpool::{
     OrcaWhirlpoolTradedEventRecord,
     OrcaWhirlpoolLiquidityIncreasedEventRecord,
     OrcaWhirlpoolLiquidityDecreasedEventRecord,
-    OrcaWhirlpoolPool,
+    OrcaWhirlpoolPoolRecord,
 };
 
 /// Repository for Orca Whirlpool event database operations
@@ -156,7 +156,7 @@ impl OrcaWhirlpoolRepository {
     //
 
     /// Get all pools from the database
-    pub async fn get_all_pools(&self) -> Result<Vec<OrcaWhirlpoolPool>> {
+    pub async fn get_all_pools(&self) -> Result<Vec<OrcaWhirlpoolPoolRecord>> {
         let rows = sqlx
             ::query(
                 "SELECT p.pool_mint as whirlpool, 
@@ -177,7 +177,7 @@ impl OrcaWhirlpoolRepository {
 
         let pools = rows
             .into_iter()
-            .map(|row| OrcaWhirlpoolPool {
+            .map(|row| OrcaWhirlpoolPoolRecord {
                 whirlpool: row.get("whirlpool"),
                 token_mint_a: row.get("token_mint_a"),
                 token_mint_b: row.get("token_mint_b"),
@@ -193,7 +193,10 @@ impl OrcaWhirlpoolRepository {
     }
 
     /// Get a specific pool by address
-    pub async fn get_pool(&self, whirlpool_address: &str) -> Result<Option<OrcaWhirlpoolPool>> {
+    pub async fn get_pool(
+        &self,
+        whirlpool_address: &str
+    ) -> Result<Option<OrcaWhirlpoolPoolRecord>> {
         let row = sqlx
             ::query(
                 "SELECT p.pool_mint as whirlpool, 
@@ -216,7 +219,7 @@ impl OrcaWhirlpoolRepository {
         match row {
             Some(row) =>
                 Ok(
-                    Some(OrcaWhirlpoolPool {
+                    Some(OrcaWhirlpoolPoolRecord {
                         whirlpool: row.get("whirlpool"),
                         token_mint_a: row.get("token_mint_a"),
                         token_mint_b: row.get("token_mint_b"),
@@ -232,7 +235,7 @@ impl OrcaWhirlpoolRepository {
     }
 
     /// Add or update a pool
-    pub async fn upsert_pool(&self, pool: &OrcaWhirlpoolPool) -> Result<()> {
+    pub async fn upsert_pool(&self, pool: &OrcaWhirlpoolPoolRecord) -> Result<()> {
         // Start a transaction
         let mut tx = self.pool.begin().await?;
 
