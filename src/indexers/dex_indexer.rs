@@ -259,9 +259,12 @@ pub trait DexIndexer {
         self.log_error(&format!("Error parsing transaction {}", signature), err);
 
         // Decide if we should retry or skip based on error type
-        if err.to_string().contains("not found") {
-            self.log_activity("Transaction not found, skipping", None);
-            Ok(()) // Return Ok to continue processing
+        if
+            err.to_string().contains("not found") ||
+            err.to_string().contains("Failed to fetch transaction")
+        {
+            self.log_activity("Transaction not found or unavailable, skipping", None);
+            Ok(())
         } else {
             // For other errors, propagate
             Err(anyhow::anyhow!("Transaction parse error: {}", err))
